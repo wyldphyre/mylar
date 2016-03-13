@@ -16,9 +16,10 @@
 from __future__ import division
 
 import mylar
-from mylar import logger, db, updater, helpers, parseit, findcomicfeed, notifiers, rsscheck, Failed
+from mylar import logger, db, updater, helpers, parseit, findcomicfeed, notifiers, rsscheck, Failed, filechecker
 
 import lib.feedparser as feedparser
+import lib.requests as requests
 import urllib
 import os, errno
 import string
@@ -92,6 +93,9 @@ def search_init(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueD
         if mylar.ENABLE_KAT:
             torprovider.append('kat')
             torp+=1
+        if mylar.ENABLE_TORZNAB:
+            torprovider.append('torznab')
+            torp+=1
     ##nzb provider selection##
     ##'dognzb' or 'nzb.su' or 'experimental'
     nzbprovider = []
@@ -102,6 +106,7 @@ def search_init(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueD
     if mylar.DOGNZB == 1:
         nzbprovider.append('dognzb')
         nzbp+=1
+
     # --------
     #  Xperimental
     if mylar.EXPERIMENTAL == 1:
@@ -115,7 +120,7 @@ def search_init(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueD
     if mylar.NEWZNAB == 1:
     #if len(mylar.EXTRA_NEWZNABS > 0):
         for newznab_host in mylar.EXTRA_NEWZNABS:
-            if newznab_host[4] == '1' or newznab_host[4] == 1:
+            if newznab_host[5] == '1' or newznab_host[5] == 1:
                 newznab_hosts.append(newznab_host)
                 #if newznab_host[0] == newznab_host[1]:
                 #    nzbprovider.append('newznab')
@@ -192,13 +197,20 @@ def search_init(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueD
         #torprtmp = 0 # torprtmp = torpr
         prov_count = 0
 
-        while (prov_count <= len(prov_order) -1):
-        #while (torprtmp <= torpr): #(torprtmp >=0 ):
+        if len(prov_order) == 1:
+            tmp_prov_count = 1
+        else:
+            tmp_prov_count = len(prov_order)
+
+        while (prov_count < tmp_prov_count): #len(prov_order) -1):
+            send_prov_count = tmp_prov_count - prov_count
             newznab_host = None
             if prov_order[prov_count] == '32p':
                 searchprov = '32P'
             elif prov_order[prov_count] == 'kat':
                 searchprov = 'KAT'
+            elif prov_order[prov_count] == 'torznab':
+                searchprov = 'Torznab'
             elif 'newznab' in prov_order[prov_count]:
             #this is for newznab
                 searchprov = 'newznab'
@@ -211,8 +223,13 @@ def search_init(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueD
                 newznab_host = None
                 searchprov = prov_order[prov_count].lower()
 
+            if searchprov == 'dognzb' and mylar.DOGNZB == 0:
+                #since dognzb could hit the 50 daily api limit during the middle of a search run, check here on each pass to make
+                #sure it's not disabled (it gets auto-disabled on maxing out the API hits)
+                prov_count+=1
+                continue
             if searchmode == 'rss':
-                findit = NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDate, StoreDate, searchprov, prov_count, IssDateFix, IssueID, UseFuzzy, newznab_host, ComicVersion=ComicVersion, SARC=SARC, IssueArcID=IssueArcID, RSS="yes", ComicID=ComicID, issuetitle=issuetitle, unaltered_ComicName=unaltered_ComicName)
+                findit = NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDate, StoreDate, searchprov, send_prov_count, IssDateFix, IssueID, UseFuzzy, newznab_host, ComicVersion=ComicVersion, SARC=SARC, IssueArcID=IssueArcID, RSS="yes", ComicID=ComicID, issuetitle=issuetitle, unaltered_ComicName=unaltered_ComicName)
                 if findit == 'yes':
                     logger.fdebug("findit = found!")
                     break
@@ -225,33 +242,36 @@ def search_init(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueD
                         for calt in chkthealt:
                             AS_Alternate = re.sub('##', '', calt)
                             logger.info(u"Alternate Search pattern detected...re-adjusting to : " + str(AS_Alternate) + " " + str(ComicYear))
-                            findit = NZB_SEARCH(AS_Alternate, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDate, StoreDate, searchprov, prov_count, IssDateFix, IssueID, UseFuzzy, newznab_host, ComicVersion=ComicVersion, SARC=SARC, IssueArcID=IssueArcID, RSS="yes", ComicID=ComicID, issuetitle=issuetitle, unaltered_ComicName=AS_Alternate)
+                            findit = NZB_SEARCH(AS_Alternate, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDate, StoreDate, searchprov, send_prov_count, IssDateFix, IssueID, UseFuzzy, newznab_host, ComicVersion=ComicVersion, SARC=SARC, IssueArcID=IssueArcID, RSS="yes", ComicID=ComicID, issuetitle=issuetitle, unaltered_ComicName=AS_Alternate)
                             if findit == 'yes':
                                 break
                         if findit == 'yes': break
 
             else:
-                findit = NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDate, StoreDate, searchprov, prov_count, IssDateFix, IssueID, UseFuzzy, newznab_host, ComicVersion=ComicVersion, SARC=SARC, IssueArcID=IssueArcID, ComicID=ComicID, issuetitle=issuetitle, unaltered_ComicName=unaltered_ComicName)
-                if findit == 'yes':
-                    logger.fdebug("findit = found!")
-                    break
+                if searchprov == '32P':
+                    logger.fdebug('32P backlog searching is not currently supported.')
                 else:
-                    if AlternateSearch is not None and AlternateSearch != "None":
-                        chkthealt = AlternateSearch.split('##')
-                        if chkthealt == 0:
-                            AS_Alternate = AlternateSearch
-                        loopit = len(chkthealt)
-                        for calt in chkthealt:
-                            AS_Alternate = re.sub('##', '', calt)
-                            logger.info(u"Alternate Search pattern detected...re-adjusting to : " + str(AS_Alternate) + " " + str(ComicYear))
-                            findit = NZB_SEARCH(AS_Alternate, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDate, StoreDate, searchprov, prov_count, IssDateFix, IssueID, UseFuzzy, newznab_host, ComicVersion=ComicVersion, SARC=SARC, IssueArcID=IssueArcID, ComicID=ComicID, issuetitle=issuetitle, unaltered_ComicName=unaltered_ComicName)
-                            if findit == 'yes':
-                                break
-                        if findit == 'yes': break
+                    findit = NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDate, StoreDate, searchprov, send_prov_count, IssDateFix, IssueID, UseFuzzy, newznab_host, ComicVersion=ComicVersion, SARC=SARC, IssueArcID=IssueArcID, ComicID=ComicID, issuetitle=issuetitle, unaltered_ComicName=unaltered_ComicName)
+                    if findit == 'yes':
+                        logger.fdebug("findit = found!")
+                        break
+                    else:
+                        if AlternateSearch is not None and AlternateSearch != "None":
+                            chkthealt = AlternateSearch.split('##')
+                            if chkthealt == 0:
+                                AS_Alternate = AlternateSearch
+                            loopit = len(chkthealt)
+                            for calt in chkthealt:
+                                AS_Alternate = re.sub('##', '', calt)
+                                logger.info(u"Alternate Search pattern detected...re-adjusting to : " + str(AS_Alternate) + " " + str(ComicYear))
+                                findit = NZB_SEARCH(AS_Alternate, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDate, StoreDate, searchprov, send_prov_count, IssDateFix, IssueID, UseFuzzy, newznab_host, ComicVersion=ComicVersion, SARC=SARC, IssueArcID=IssueArcID, ComicID=ComicID, issuetitle=issuetitle, unaltered_ComicName=unaltered_ComicName)
+                                if findit == 'yes':
+                                    break
+                            if findit == 'yes': break
 
             if searchprov == 'newznab':
                 searchprov = newznab_host[0].rstrip()
-            logger.info('Could not find Issue ' + IssueNumber + ' of ' + ComicName + '(' + str(SeriesYear) + ') using ' + str(searchprov))
+            logger.info('Could not find Issue ' + IssueNumber + ' of ' + ComicName + '(' + str(SeriesYear) + ') using ' + str(searchprov) + ' [' + str(searchmode) + ']')
             prov_count+=1
             #torprtmp+=1  #torprtmp-=1
 
@@ -263,10 +283,12 @@ def search_init(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueD
                 helpers.incr_snatched(ComicID)
             return findit, searchprov
         else:
-            if manualsearch is None:
+            if searchprov == '32P':
+                pass
+            elif manualsearch is None:
                 logger.info('Finished searching via :' + str(searchmode) + '. Issue not found - status kept as Wanted.')
             else:
-                logger.info('Could not find issue doing a manual search via : ' + str(searchmode))
+                logger.fdebug('Could not find issue doing a manual search via : ' + str(searchmode))
             i+=1
 
     return findit, 'None'
@@ -275,18 +297,22 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
 
     if nzbprov == 'nzb.su':
         apikey = mylar.NZBSU_APIKEY
+        verify = bool(mylar.NZBSU_VERIFY)
     elif nzbprov == 'dognzb':
         apikey = mylar.DOGNZB_APIKEY
+        verify = bool(mylar.DOGNZB_VERIFY)
     elif nzbprov == 'experimental':
         apikey = 'none'
+        verify = False
     elif nzbprov == 'newznab':
         #updated to include Newznab Name now
         name_newznab = newznab_host[0].rstrip()
         host_newznab = newznab_host[1].rstrip()
-        apikey = newznab_host[2].rstrip()
-        if '#' in newznab_host[3].rstrip():
-            catstart = newznab_host[3].find('#')
-            category_newznab = newznab_host[3][catstart +1:]
+        apikey = newznab_host[3].rstrip()
+        verify = bool(newznab_host[2].rstrip())
+        if '#' in newznab_host[4].rstrip():
+            catstart = newznab_host[4].find('#')
+            category_newznab = newznab_host[4][catstart +1:]
             logger.fdebug('non-default Newznab category set to :' + str(category_newznab))
         else:
             category_newznab = '7030'
@@ -384,7 +410,7 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
             break
         elif '.' in findcomiciss[i]:
             c_number = findcomiciss[:i].rstrip()
-            c_num_a4 = findcomiciss[i +1:].rstrip()
+            c_num_a4 = findcomiciss[i+1:].rstrip()
             #if decimal seperates numeric from alpha (ie - 7.INH)
             #don't give calpha a value or else will seperate with a space further down
             #assign it to dsp_c_alpha so that it can be displayed for debugging.
@@ -398,6 +424,11 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
 
     if c_number is None:
         c_number = findcomiciss # if it's None, means no special alphas or decimals
+
+    if '.' in c_number:
+        decst = c_number.find('.')
+        c_number = c_number[:decst].rstrip()
+        #logger.fdebug('setting cmloopit to: ' + str(c_number))
 
     if len(c_number) == 1:
         cmloopit = 3
@@ -423,7 +454,12 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
     # results. '011' will return different than '11', as will '009' and '09'.
 
     while (findloop < findcount):
+        #logger.fdebug('findloop: ' + str(findloop) + ' / findcount: ' + str(findcount))
         comsrc = comsearch
+        if nzbprov == 'dognzb' and not mylar.DOGNZB:
+            foundc = "no"
+            done = True
+            break
         while (cmloopit >= 1):
             #if issue_except is None: issue_exc = ''
             #else: issue_exc = issue_except
@@ -471,10 +507,9 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
             else:
                 #32P is redudant now since only RSS works
                 # - just getting it ready for when it's not redudant :)
-                if nzbprov == '':
+                if nzbprov == '' or nzbprov == '32P':
                     bb = "no results"
-                elif nzbprov == '32P':
-                    bb = "no results"
+                    rss = "no"
                 elif nzbprov == 'KAT':
                     cmname = re.sub("%20", " ", str(comsrc))
                     logger.fdebug("Sending request to [KAT] for " + str(cmname) + " : " + str(mod_isssearch))
@@ -492,22 +527,23 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
                             host_newznab_fix = str(host_newznab) + "/"
                         else: host_newznab_fix = host_newznab
                         findurl = str(host_newznab_fix) + "api?t=search&q=" + str(comsearch) + "&o=xml&cat=" + str(category_newznab)
+                    elif nzbprov == 'Torznab':
+                        if mylar.TORZNAB_HOST.endswith('/'):
+                            #http://localhost:9117/api/iptorrents
+                            torznab_fix = mylar.TORZNAB_HOST[:-1]
+                        else:
+                            torznab_fix = mylar.TORZNAB_HOST
+                        findurl = str(torznab_fix) + "?t=search&q=" + str(comsearch) + "&o=xml&cat=" + str(mylar.TORZNAB_CATEGORY)
+                        apikey = mylar.TORZNAB_APIKEY
                     if nzbprov != 'nzbx':
                         # helper function to replace apikey here so we avoid logging it ;)
                         findurl = findurl + "&apikey=" + str(apikey)
                         logsearch = helpers.apiremove(str(findurl), 'nzb')
-                        logger.fdebug("search-url: " + str(logsearch))
 
                         ### IF USENET_RETENTION is set, honour it
                         ### For newznab sites, that means appending "&maxage=<whatever>" on the URL
-                        if mylar.USENET_RETENTION != None:
+                        if mylar.USENET_RETENTION != None and nzbprov != 'torznab':
                             findurl = findurl + "&maxage=" + str(mylar.USENET_RETENTION)
-
-                        # Add a user-agent
-                        #print ("user-agent:" + str(mylar.USER_AGENT))
-                        request = urllib2.Request(findurl)
-                        request.add_header('User-Agent', str(mylar.USER_AGENT))
-                        opener = urllib2.build_opener()
 
                         #set a delay between searches here. Default is for 60 seconds...
                         #changing this to lower could result in a ban from your nzb source due to hammering.
@@ -537,8 +573,25 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
                             logger.info("pausing for " + str(pause_the_search) + " seconds before continuing to avoid hammering")
                             time.sleep(pause_the_search)
 
+                        # Add a user-agent
+                        headers = {'User-Agent':   str(mylar.USER_AGENT)}
+                        payload = None
+
+                        if findurl.startswith('https:') and verify == False:
+                            try:
+                                from lib.requests.packages.urllib3 import disable_warnings
+                                disable_warnings()
+                            except:
+                                logger.warn('Unable to disable https warnings. Expect some spam if using https nzb providers.')
+
+                        elif findurl.startswith('http:') and verify == True:
+                            verify = False
+
+                        #logger.fdebug('[SSL: ' + str(verify) + '] Search URL: ' + findurl)
+                        logger.fdebug('[SSL: ' + str(verify) + '] Search URL: ' + str(logsearch))
+
                         try:
-                            data = opener.open(request).read()
+                            r = requests.get(findurl, params=payload, verify=verify, headers=headers)
                         except Exception, e:
                             logger.warn('Error fetching data from %s: %s' % (nzbprov, e))
                             if 'HTTP Error 503' in e:
@@ -547,15 +600,29 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
                                 break
                             data = False
 
+                        logger.info('status code: ' + str(r.status_code))
+
+                        if str(r.status_code) != '200':
+                            logger.warn('Unable to retrieve search results from ' + tmpprov + ' [Status Code returned: ' + str(r.status_code) + ']')
+                            data = False
+                        else:
+                            data = r.content
+
                         if data:
                             bb = feedparser.parse(data)
                         else:
                             bb = "no results"
+
                         #logger.info('Search results:' + str(bb))
                         try:
                             if bb['feed']['error']:
                                 logger.error('[ERROR CODE: ' + str(bb['feed']['error']['code']) + '] ' + str(bb['feed']['error']['description']))
-                                bb = "no results"
+                                if bb['feed']['error']['code'] == '910':
+                                    logger.warn('DAILY API limit reached. Disabling provider usage until 12:01am')
+                                    mylar.DOGNZB = 0
+                                    foundc = False
+                                    done = True
+                                break
                         except:
                             #logger.info('no errors on data retrieval...proceeding')
                             pass
@@ -574,6 +641,29 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
             else:
                 for entry in bb['entries']:
                     logger.fdebug("checking search result: " + entry['title'])
+                    #some nzbsites feel that comics don't deserve a nice regex to strip the crap from the header, the end result is that we're
+                    #dealing with the actual raw header which causes incorrect matches below.
+                    #this is a temporary cut from the experimental search option (findcomicfeed) as it does this part well usually.
+                    except_list=['releases', 'gold line', 'distribution', '0-day', '0 day']
+                    splitTitle = entry['title'].split("\"")
+                    _digits = re.compile('\d')
+
+                    ComicTitle = entry['title']
+                    for subs in splitTitle:
+                        logger.fdebug('sub:' + subs)
+                        regExCount = 0
+                        if len(subs) >= len(ComicName.split()) and not any(d in subs.lower() for d in except_list) and bool(_digits.search(subs)) is True:
+                            if subs.lower().startswith('for'):
+                                if ComicName.lower().startswith('for'):
+                                    pass
+                                else:
+                                    #this is the crap we ignore. Continue (commented else, as it spams the logs)
+                                    #logger.fdebug('this starts with FOR : ' + str(subs) + '. This is not present in the series - ignoring.')
+                                    continue
+                            logger.fdebug('Detected crap within header. Ignoring this portion of the result in order to see if it\'s a valid match.')
+                            ComicTitle = subs
+                            break
+
                     if nzbprov != "dognzb":
                         #rss for experimental doesn't have the size constraints embedded. So we do it here.
                         if RSS == "yes":
@@ -647,6 +737,8 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
 
                     if UseFuzzy == "1":
                         logger.fdebug('Year has been fuzzied for this series, ignoring store date comparison entirely.')
+                        postdate_int = None
+                        issuedate_int = None
                     else:
 
                         #use store date instead of publication date for comparisons since publication date is usually +2 months
@@ -696,13 +788,14 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
 
 # -- end size constaints.
 
-                    if '(digital first)' in entry['title'].lower():
-                        dig_moving = re.sub('\(digital first\)', '', entry['title'].lower()).strip()
+                    if '(digital first)' in ComicTitle.lower(): #entry['title'].lower():
+                        dig_moving = re.sub('\(digital first\)', '', ComicTitle.lower()).strip() #entry['title'].lower()).strip()
                         dig_moving = re.sub('[\s+]', ' ', dig_moving)
                         dig_mov_end = dig_moving + ' (Digital First)'
                         thisentry = dig_mov_end
                     else:
-                        thisentry = entry['title']
+                        thisentry = ComicTitle #entry['title']
+
                     logger.fdebug("Entry: " + thisentry)
                     cleantitle = thisentry
 
@@ -752,44 +845,75 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
                        ComVersChk = 0
 
                     ctchk = cleantitle.split()
+                    ctchk_indexes = []
+                    volfound = False
+                    vol_nono = []
+                    new_cleantitle = []
+
+                    fndcomicversion = None
                     for ct in ctchk:
-                       if ct.lower().startswith('v') and ct[1:].isdigit():
-                            logger.fdebug("possible versioning..checking")
-                            #we hit a versioning # - account for it
-                            if ct[1:].isdigit():
-                                if len(ct[1:]) == 4:  #v2013
-                                    logger.fdebug("Version detected as " + str(ct))
-                                    vers4year = "yes" #re.sub("[^0-9]", " ", str(ct)) #remove the v
-                                    #cleantitle = re.sub(ct, "(" + str(vers4year) + ")", cleantitle)
-                                    #logger.fdebug("volumized cleantitle : " + cleantitle)
-                                    versionfound = "yes"
-                                    break
+                        if any([ct.lower().startswith('v') and ct[1:].isdigit(), ct.lower()[:3] == 'vol', volfound == True]):
+                            if volfound == True:
+                                logger.fdebug('Split Volume label detected [' + ct + '] - ie. Vol 4. Attempting to adust.')
+                                if ct.isdigit():
+                                    vol_nono.append(ctchk.index(ct))
+                                    #recreate the cleantitle, with the volume label completely removed (but stored for comparison later)
+                                    ct = 'v' + str(ct)
+                                    ctchk_indexes.extend(range(0, len(ctchk)))
+                                    logger.info(ctchk_indexes)
+                                    for i in ctchk_indexes:
+                                        if i not in vol_nono:
+                                            new_cleantitle.append(ctchk[i])
+                                    cleantitle = ' '.join(new_cleantitle)
+                                    logger.fdebug('Newly finished reformed cleantitle (with NO volume label): ' + cleantitle)
+                                    volfound == False
+                            tmpsplit = ct
+                            if tmpsplit.lower().startswith('vol'):
+                                logger.fdebug('volume detected - stripping and re-analzying for volume label.')
+                                if '.' in tmpsplit:
+                                    tmpsplit = re.sub('.', '', tmpsplit).strip()
+                                tmpsplit = re.sub('vol', '', tmpsplit.lower()).strip()
+                                #if vol label set as 'Vol 4' it will obliterate the Vol, but pass over the '4' - set
+                                #volfound to True so that it can loop back around.
+                                if not tmpsplit.isdigit():
+                                    #vol_label = ct  #store the wording of how the Vol is defined so we can skip it later on.
+                                    vol_nono.append(ctchk.index(ct))
+                                    volfound = True
+                                    continue
+
+                            if len(tmpsplit[1:]) == 4 and tmpsplit[1:].isdigit():  #v2013
+                                logger.fdebug("[Vxxxx] Version detected as " + str(tmpsplit))
+                                vers4year = "yes" #re.sub("[^0-9]", " ", str(ct)) #remove the v
+                                fndcomicversion = str(tmpsplit)
+                            elif len(tmpsplit[1:]) == 1 and tmpsplit[1:].isdigit():  #v2
+                                logger.fdebug("[Vx] Version detected as " + str(tmpsplit))
+                                vers4vol = str(tmpsplit)
+                                fndcomicversion = str(tmpsplit)
+                            elif tmpsplit[1:].isdigit() and len(tmpsplit) < 4:
+                                logger.fdebug('[Vxxx] Version detected as ' +str(tmpsplit))
+                                vers4vol = str(tmpsplit)
+                                fndcomicversion = str(tmpsplit)
+                            elif tmpsplit.isdigit() and len(tmpsplit) <=4:
+                                # this stuff is necessary for 32P volume manipulation
+                                if len(tmpsplit) == 4:
+                                    vers4year = "yes"
+                                    fndcomicversion = str(tmpsplit)
+                                elif len(tmpsplit) == 1:
+                                    vers4vol = str(tmpsplit)
+                                    fndcomicversion = str(tmpsplit)
+                                elif len(tmpsplit) < 4:
+                                    vers4vol = str(tmpsplit)
+                                    fndcomicversion = str(tmpsplit)
                                 else:
-                                    if len(ct) < 4:
-                                        logger.fdebug("Version detected as " + str(ct))
-                                        vers4vol = str(ct)
-                                        versionfound = "yes"
-                                        break
-
-                            logger.fdebug("false version detection..ignoring.")
-
-                       elif ct.lower()[:3] == 'vol':
-                            #if in format vol.2013/vol2013/vol01/vol.1, etc
-                            ct = re.sub('vol', '', ct.lower())
-                            if '.' in ct: re.sub('.', '', ct).strip()
-                            if ct.lower()[4:].isdigit():
-                                logger.fdebug('volume indicator detected as version #:' + str(ct))
-                                vers4year = "yes"
-                                versionfound = "yes"
-                                break
+                                    logger.fdebug("error - unknown length for : " + str(tmpsplit))
+                                    continue
                             else:
-                                vers4vol = ct
-                                versionfound = "yes"
-                                logger.fdebug('volume indicator detected as version #:' + str(vers4vol))
-                                break
+                                logger.fdebug("error - unknown length for : " + str(tmpsplit))
+                                continue
 
-                            logger.fdebug("false version detection..ignoring.")
-
+                        if fndcomicversion:
+                            versionfound = "yes"                            
+                            break
 
                     if len(re.findall('[^()]+', cleantitle)) == 1 or 'cover only' in cleantitle.lower():
                         #some sites don't have (2013) or whatever..just v2 / v2013. Let's adjust:
@@ -1004,44 +1128,47 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
                     else:
                         #if the issue is alphanumeric (ie. 15AU, 12A) it'll error.
                         tmpiss = splitit[(len(splitit) -1)]
-                        i = 0
-                        alphas = None
-                        a_issno = None
-                        while (i < len(tmpiss)):
-                            if tmpiss[i].isalpha():
-                            #take first occurance of alpha in string and carry it through
-                                alphas = tmpiss[i:].rstrip()
-                                a_issno = tmpiss[:i +1].rstrip()
-                                break
-                            i+=1
-                        logger.fdebug("alphas: " + str(alphas))
-                        logger.fdebug("a_issno: " + str(a_issno))
-                        if alphas is None:
-                            # if the nzb name doesn't follow the series-issue-year format even closely..ignore nzb
-                            logger.fdebug("invalid naming format of nzb detected - cannot properly determine issue")
-                            continue
-                        else:
-                            if a_issno == '' and alphas is not None:
-                                #print 'issno & alphas blank'
-                                #print 'splitit: ' + splitit[(len(splitit)-2)]
-                                #print 'splitit: ' + splitit[(len(splitit)-1)]
-                                #if there' a space between the issue & alpha, join them.
-                                findstart = thisentry.find(splitit[(len(splitit) -1)])
-                                #print 'thisentry : ' + thisentry
-                                #print 'decimal location : ' + str(findstart)
-                                if thisentry[findstart -1] == '.':
-                                    comic_iss = splitit[(len(splitit) -2)] + '.' + splitit[(len(splitit) -1)]
-                                else:
-                                    comic_iss = splitit[(len(splitit) -2)] + splitit[(len(splitit) -1)]
-                                logger.fdebug('comic_iss is : ' + str(comic_iss))
-                                splitst = len(splitit) - 2
+                        if not tmpiss.isdigit():
+                            findstart = thisentry.find(splitit[(len(splitit) -1)])
+                            #tmpiss = splitit[(len(splitit) -2)] + splitit[(len(splitit) -1)]
+                            if thisentry[findstart -1] == '.':
+                                comic_iss = splitit[(len(splitit) -2)] + '.' + splitit[(len(splitit) -1)]
                             else:
-                                comic_iss = tmpiss
-                                splitst = len(splitit) - 1
+                                comic_iss = splitit[(len(splitit) -2)] + splitit[(len(splitit) -1)]
+                            logger.fdebug('comic_iss is : ' + str(comic_iss))
+                            splitst = len(splitit) - 2
+                            logger.fdebug('issue number seperated. Rejoining to complete comparison properly to : ' + tmpiss)
+                        else:
+                            i = 0
+                            alphas = None
+                            a_issno = None
+                            while (i < len(tmpiss)):
+                                if tmpiss[i].isalpha():
+                                #take first occurance of alpha in string and carry it through
+                                    alphas = tmpiss[i:].rstrip()
+                                    a_issno = tmpiss[:i +1].rstrip()
+                                    break
+                                i+=1
+                            logger.fdebug("alphas: " + str(alphas))
+                            logger.fdebug("a_issno: " + str(a_issno))
+                            if alphas is None:
+                                # if the nzb name doesn't follow the series-issue-year format even closely..ignore nzb
+                                logger.fdebug("invalid naming format of nzb detected - cannot properly determine issue")
+                                continue
+                            else:
+                                if a_issno == '' and alphas is not None:
+                                    #if there' a space between the issue & alpha, join them.
+                                    findstart = thisentry.find(splitit[(len(splitit) -1)])
+                                    if thisentry[findstart -1] == '.':
+                                        comic_iss = splitit[(len(splitit) -2)] + '.' + splitit[(len(splitit) -1)]
+                                    else:
+                                        comic_iss = splitit[(len(splitit) -2)] + splitit[(len(splitit) -1)]
+                                    logger.fdebug('comic_iss is : ' + str(comic_iss))
+                                    splitst = len(splitit) - 2
+                                else:
+                                    comic_iss = tmpiss
+                                    splitst = len(splitit) - 1
                     logger.fdebug("adjusting from: " + str(comic_iss_b4) + " to: " + str(comic_iss))
-                    #bmm = re.findall('v\d', comic_iss)
-                    #if len(bmm) > 0: splitst = len(splitit) - 2
-                    #else: splitst = len(splitit) - 1
 
                     # make sure that things like - in watchcomic are accounted for when comparing to nzb.
                     findcomic = re.sub('[\/]', ' ', findcomic)
@@ -1064,112 +1191,113 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
                         #splitst = splitst - 1
 
                     if versionfound == "yes":
-                        volfound = False
-                        for tstsplit in splitit:
-                            logger.fdebug('comparing ' + str(tstsplit))
-                            if volfound == True:
-                                logger.fdebug('Split Volume label detected - ie. Vol 4. Attempting to adust.')
-                                if tstsplit.isdigit():
-                                    tstsplit = 'v' + str(tstsplit)
-                                    volfound == False
-                            if tstsplit.lower().startswith('v'): #tstsplit[1:].isdigit():
-                                logger.fdebug("this has a version #...let's adjust")
-                                tmpsplit = tstsplit
-                                if tmpsplit.lower().startswith('vol'):
-                                    logger.fdebug('volume detected - stripping and re-analzying for volume label.')
-                                    if '.' in tmpsplit:
-                                        tmpsplit = re.sub('.', '', tmpsplit).strip()
-                                    tmpsplit = re.sub('vol', '', tmpsplit.lower()).strip()
-                                    #if vol label set as 'Vol 4' it will obliterate the Vol, but pass over the '4' - set
-                                    #volfound to True so that it can loop back around.
-                                    if not tmpsplit.isdigit():
-                                        volfound = True
-                                        continue
-                                if len(tmpsplit[1:]) == 4 and tmpsplit[1:].isdigit():  #v2013
-                                    logger.fdebug("[Vxxxx] Version detected as " + str(tmpsplit))
-                                    vers4year = "yes" #re.sub("[^0-9]", " ", str(ct)) #remove the v
-                                elif len(tmpsplit[1:]) == 1 and tmpsplit[1:].isdigit():  #v2
-                                    logger.fdebug("[Vx] Version detected as " + str(tmpsplit))
-                                    vers4vol = str(tmpsplit)
-                                elif tmpsplit[1:].isdigit() and len(tmpsplit) < 4:
-                                    logger.fdebug('[Vxxx] Version detected as ' +str(tmpsplit))
-                                    vers4vol = str(tmpsplit)
-                                elif tmpsplit.isdigit() and len(tmpsplit) <=4:
-                                    # this stuff is necessary for 32P volume manipulation
-                                    if len(tmpsplit) == 4:
-                                        vers4year = "yes"
-                                    elif len(tmpsplit) == 1:
-                                        vers4vol = str(tmpsplit)
-                                    elif len(tmpsplit) < 4:
-                                        vers4vol = str(tmpsplit)
-                                    else:
-                                        logger.fdebug("error - unknown length for : " + str(tmpsplit))
-                                        continue
-                                else:
-                                    logger.fdebug("error - unknown length for : " + str(tmpsplit))
-                                    continue
+#                        volfound = False
+#                        vol_label = None
+#                        for tstsplit in splitit:
+#                            logger.fdebug('comparing ' + str(tstsplit))
+#                            if volfound == True:
+#                                logger.fdebug('Split Volume label detected - ie. Vol 4. Attempting to adust.')
+#                                if tstsplit.isdigit():
+#                                    vol_label = vol_label + ' ' + str(tstsplit)
+#                                    tstsplit = 'v' + str(tstsplit)
+#                                    volfound == False
+#                            if tstsplit.lower().startswith('v'): #tstsplit[1:].isdigit():
+#                                logger.fdebug("this has a version #...let's adjust")
+#                                tmpsplit = tstsplit
+#                                if tmpsplit.lower().startswith('vol'):
+#                                    logger.fdebug('volume detected - stripping and re-analzying for volume label.')
+#                                    if '.' in tmpsplit:
+#                                        tmpsplit = re.sub('.', '', tmpsplit).strip()
+#                                    tmpsplit = re.sub('vol', '', tmpsplit.lower()).strip()
+#                                    #if vol label set as 'Vol 4' it will obliterate the Vol, but pass over the '4' - set
+#                                    #volfound to True so that it can loop back around.
+#                                    if not tmpsplit.isdigit():
+#                                        vol_label = tstsplit  #store the wording of how the Vol is defined so we can skip it later on.
+#                                        volfound = True
+#                                        continue
+#                                if len(tmpsplit[1:]) == 4 and tmpsplit[1:].isdigit():  #v2013
+#                                    logger.fdebug("[Vxxxx] Version detected as " + str(tmpsplit))
+#                                    vers4year = "yes" #re.sub("[^0-9]", " ", str(ct)) #remove the v
+#                                elif len(tmpsplit[1:]) == 1 and tmpsplit[1:].isdigit():  #v2
+#                                    logger.fdebug("[Vx] Version detected as " + str(tmpsplit))
+#                                    vers4vol = str(tmpsplit)
+#                                elif tmpsplit[1:].isdigit() and len(tmpsplit) < 4:
+#                                    logger.fdebug('[Vxxx] Version detected as ' +str(tmpsplit))
+#                                    vers4vol = str(tmpsplit)
+#                                elif tmpsplit.isdigit() and len(tmpsplit) <=4:
+#                                    # this stuff is necessary for 32P volume manipulation
+#                                    if len(tmpsplit) == 4:
+#                                        vers4year = "yes"
+#                                    elif len(tmpsplit) == 1:
+#                                        vers4vol = str(tmpsplit)
+#                                    elif len(tmpsplit) < 4:
+#                                        vers4vol = str(tmpsplit)
+#                                    else:
+#                                        logger.fdebug("error - unknown length for : " + str(tmpsplit))
+#                                        continue
+#                                else:
+#                                    logger.fdebug("error - unknown length for : " + str(tmpsplit))
+#                                    continue
 
-                                logger.fdebug("volume detection commencing - adjusting length.")
+                        logger.fdebug("volume detection commencing - adjusting length.")
 
-                                logger.fdebug("watch comicversion is " + str(ComicVersion))
-                                fndcomicversion = str(tstsplit)
-                                logger.fdebug("version found: " + str(fndcomicversion))
-                                logger.fdebug("vers4year: " + str(vers4year))
-                                logger.fdebug("vers4vol: " + str(vers4vol))
+                        logger.fdebug("watch comicversion is " + str(ComicVersion))
+                        logger.fdebug("version found: " + str(fndcomicversion))
+                        logger.fdebug("vers4year: " + str(vers4year))
+                        logger.fdebug("vers4vol: " + str(vers4vol))
 
-                                if vers4year is not "no" or vers4vol is not "no":
+                        if vers4year is not "no" or vers4vol is not "no":
 
-                                    #if the volume is None, assume it's a V1 to increase % hits
-                                    if ComVersChk == 0:
-                                        D_ComicVersion = 1
-                                    else:
-                                        D_ComicVersion = ComVersChk
+                            #if the volume is None, assume it's a V1 to increase % hits
+                            if ComVersChk == 0:
+                                D_ComicVersion = 1
+                            else:
+                                D_ComicVersion = ComVersChk
 
-                                #if this is a one-off, SeriesYear will be None and cause errors.
-                                if SeriesYear is None:
-                                    S_ComicVersion = 0
-                                else:
-                                    S_ComicVersion = str(SeriesYear)
+                        #if this is a one-off, SeriesYear will be None and cause errors.
+                        if SeriesYear is None:
+                            S_ComicVersion = 0
+                        else:
+                            S_ComicVersion = str(SeriesYear)
 
-                                F_ComicVersion = re.sub("[^0-9]", "", fndcomicversion)
-                                #if the found volume is a vol.0, up it to vol.1 (since there is no V0)
-                                if F_ComicVersion == '0':
-                                    #need to convert dates to just be yyyy-mm-dd and do comparison, time operator in the below calc as well which probably throws off some accuracy.
-                                    if postdate_int >= issuedate_int and nzbprov == '32P':
-                                        logger.fdebug('32P torrent discovery. Store date (' + str(stdate) + ') is before posting date (' + str(pubdate) + '), forcing volume label to be the same as series label (0-Day Enforcement): v' + str(F_ComicVersion) + ' --> v' + str(S_ComicVersion))
-                                        F_ComicVersion = D_ComicVersion
-                                    else:
-                                        F_ComicVersion = '1'
+                        F_ComicVersion = re.sub("[^0-9]", "", fndcomicversion)
+                        #if the found volume is a vol.0, up it to vol.1 (since there is no V0)
+                        if F_ComicVersion == '0':
+                            #need to convert dates to just be yyyy-mm-dd and do comparison, time operator in the below calc as well which probably throws off some accuracy.
+                            F_ComicVersion = '1'
+                            if postdate_int is not None:
+                                if postdate_int >= issuedate_int and nzbprov == '32P':
+                                    logger.fdebug('32P torrent discovery. Store date (' + str(stdate) + ') is before posting date (' + str(pubdate) + '), forcing volume label to be the same as series label (0-Day Enforcement): v' + str(F_ComicVersion) + ' --> v' + str(S_ComicVersion))
+                                    F_ComicVersion = D_ComicVersion
 
-                                logger.fdebug("FCVersion: " + str(F_ComicVersion))
-                                logger.fdebug("DCVersion: " + str(D_ComicVersion))
-                                logger.fdebug("SCVersion: " + str(S_ComicVersion))
+                        logger.fdebug("FCVersion: " + str(F_ComicVersion))
+                        logger.fdebug("DCVersion: " + str(D_ComicVersion))
+                        logger.fdebug("SCVersion: " + str(S_ComicVersion))
 
-                                #here's the catch, sometimes annuals get posted as the Pub Year
-                                # instead of the Series they belong to (V2012 vs V2013)
-                                if annualize == "true" and int(ComicYear) == int(F_ComicVersion):
-                                    logger.fdebug("We matched on versions for annuals " + str(fndcomicversion))
-                                    scount+=1
-                                    cvers = "true"
+                        #here's the catch, sometimes annuals get posted as the Pub Year
+                        # instead of the Series they belong to (V2012 vs V2013)
+                        if annualize == "true" and int(ComicYear) == int(F_ComicVersion):
+                            logger.fdebug("We matched on versions for annuals " + str(fndcomicversion))
+                            #scount+=1
+                            #cvers = "true"
 
-                                elif int(F_ComicVersion) == int(D_ComicVersion) or int(F_ComicVersion) == int(S_ComicVersion):
-                                    logger.fdebug("We matched on versions..." + str(fndcomicversion))
-                                    scount+=1
-                                    cvers = "true"
+                        elif int(F_ComicVersion) == int(D_ComicVersion) or int(F_ComicVersion) == int(S_ComicVersion):
+                            logger.fdebug("We matched on versions..." + str(fndcomicversion))
+                            #scount+=1
+                            #cvers = "true"
 
-                                else:
-                                    logger.fdebug("Versions wrong. Ignoring possible match.")
-                                    scount = 0
-                                    cvers = "false"
+                        else:
+                            logger.fdebug("Versions wrong. Ignoring possible match.")
+                            #scount = 0
+                            #cvers = "false"
 
-                                if cvers == "true":
-                                    #since we matched on versions, let's remove it entirely to improve matching.
-                                    logger.fdebug('Removing versioning from nzb filename to improve matching algorithims.')
-                                    cissb4vers = re.sub(tstsplit, "", comic_iss_b4).strip()
-                                    logger.fdebug('New b4split : ' + str(cissb4vers))
-                                    splitit = cissb4vers.split(None)
-                                    splitst -=1
-                                    break
+                        #if cvers == "true":
+                            #since we matched on versions, let's remove it entirely to improve matching.
+                            #logger.fdebug('Removing versioning [' + fndcomicversion + '] from nzb filename to improve matching algorithims.')
+                            #cissb4vers = re.sub(fndcomicversion, "", comic_iss_b4).strip()
+                            #logger.fdebug('New b4split : ' + str(cissb4vers))
+                            #splitit = cissb4vers.split(None)
+                            #splitst -=1
 
                     #do an initial check
                     initialchk = 'ok'
@@ -1177,7 +1305,7 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
                     if (splitst) != len(watchcomic_split):
 
                         if issue_firstword:
-                            vals = IssueTitleCheck(issuetitle, watchcomic_split, splitit, splitst, issue_firstword, hyphensplit, orignzb=entry['title'])
+                            vals = IssueTitleCheck(issuetitle, watchcomic_split, splitit, splitst, issue_firstword, hyphensplit, orignzb=ComicTitle) #entry['title'])
 
                             if vals is not None:
                                 if vals[0]['status'] == 'continue':
@@ -1321,7 +1449,7 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
                                               "modcomicname":  modcomicname})
 
                             #generate nzbname
-                            nzbname = nzbname_create(nzbprov, info=comicinfo, title=entry['title'])
+                            nzbname = nzbname_create(nzbprov, info=comicinfo, title=ComicTitle) #entry['title'])
 
                             #generate the send-to and actually send the nzb / torrent.
                             searchresult = searcher(nzbprov, nzbname, comicinfo, entry['link'], IssueID, ComicID, tmpprov, newznab=newznab_host)
@@ -1350,6 +1478,7 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
                 logger.info("Alphanumerics detected within IssueNumber. Seperating from Issue # and re-trying.")
                 cmloopit = origcmloopit
                 seperatealpha = "yes"
+
         findloop+=1
         if foundc == "yes":
             foundcomic.append("yes")
@@ -1366,9 +1495,10 @@ def NZB_SEARCH(ComicName, IssueNumber, ComicYear, SeriesYear, Publisher, IssueDa
             prov_count == 0
             #break
             return foundc
-        elif foundc == "no" and prov_count == 0:
+
+        if foundc == "no":# and prov_count == 0:
+            #logger.fdebug('prov_count: ' + str(prov_count))
             foundcomic.append("no")
-            #logger.fdebug('Could not find a matching comic using ' + str(tmpprov))
             if IssDateFix == "no":
                 #logger.info('Could not find Issue ' + str(IssueNumber) + ' of ' + ComicName + '(' + str(comyear) + ') using ' + str(tmpprov) + '. Status kept as wanted.' )
                 break
@@ -1623,7 +1753,7 @@ def nzbname_create(provider, title=None, info=None):
         logger.fdebug('[SEARCHER] entry[title]: ' + title)
         #gotta replace & or escape it
         nzbname = re.sub("\&", 'and', title)
-        nzbname = re.sub('[\,\:\?\']', '', nzbname)
+        nzbname = re.sub('[\,\:\?\'\+]', '', nzbname)
         nzbname = re.sub('[\(\)]', ' ', nzbname)
         logger.fdebug('[SEARCHER] nzbname (remove chars): ' + nzbname)
         nzbname = re.sub('.cbr', '', nzbname).strip()
@@ -1632,6 +1762,11 @@ def nzbname_create(provider, title=None, info=None):
         nzbname = re.sub('\s+', ' ', nzbname)  #make sure we remove the extra spaces.
         logger.fdebug('[SEARCHER] nzbname (\s): ' + nzbname)
         nzbname = re.sub(' ', '.', nzbname)
+        #remove the [1/9] parts or whatever kinda crap (usually in experimental results)
+        pattern = re.compile(r'\W\d{1,3}\/\d{1,3}\W')
+        match = pattern.search(nzbname)
+        if match:
+            nzbname = re.sub(match.group(), '', nzbname).strip()
         logger.fdebug('[SEARCHER] end nzbname: ' + nzbname)
 
     logger.fdebug("nzbname used for post-processing:" + nzbname)
@@ -1670,7 +1805,7 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
 
     nzbid = generate_id(nzbprov, link)
 
-    if link and (nzbprov != 'KAT' and nzbprov != '32P'):
+    if link and (nzbprov != 'KAT' and nzbprov != '32P' and nzbprov != 'Torznab'):
 
         #generate nzbid here.
 
@@ -1692,17 +1827,18 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
                 else:
                     host_newznab_fix = host_newznab
 
-                if 'warp?x=' in link:
-                    logger.fdebug('NZBMegaSearch url detected. Adjusting...')
+                #account for nzbmegasearch & nzbhydra
+                if 'warp?x=' in link or 'indexerguid' in link:
+                    logger.fdebug('NZBMegaSearch / NZBHydra url detected. Adjusting...')
                     nzbmega = True
                 else:
-                    apikey = newznab[2].rstrip()
+                    apikey = newznab[3].rstrip()
                     down_url = host_newznab_fix + 'api'
-                    verify = False
+                    verify = bool(newznab[2])
             else:
-                down_url = 'https://api.nzb.su/api?'
+                down_url = 'https://api.nzb.su/api'
                 apikey = mylar.NZBSU_APIKEY
-                verify = True  #unsure if verify should be set to True for nzb.su or not.
+                verify = bool(mylar.NZBSU_VERIFY)
 
             if nzbmega == True:
                 down_url = link
@@ -1717,7 +1853,7 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
         elif nzbprov == 'dognzb':
             #dognzb - need to add back in the dog apikey
             down_url = urljoin(link, str(mylar.DOGNZB_APIKEY))
-            verify = False
+            verify = bool(mylar.DOGNZB_VERIFY)
 
         else:
             #experimental - direct link.
@@ -1730,7 +1866,6 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
         else:
             logger.info('Download URL: ' + down_url + '?' + urllib.urlencode(payload) + ' [VerifySSL:' + str(verify) + ']')
 
-        import lib.requests as requests
 
         if down_url.startswith('https'):
             try:
@@ -1797,17 +1932,17 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
 
             #make sure the cache directory exists - if not, create it (used for storing nzbs).
             if os.path.exists(mylar.CACHE_DIR):
-                logger.fdebug("Cache Directory successfully found at : " + mylar.CACHE_DIR)
-                pass
+                logger.fdebug("Cache Directory successfully found at : " + mylar.CACHE_DIR + ". Ensuring proper permissions.")
+                #enforce the permissions here to ensure the lower portion writes successfully
+                filechecker.setperms(mylar.CACHE_DIR, True)
             else:
                 #let's make the dir.
                 logger.fdebug("Could not locate Cache Directory, attempting to create at : " + mylar.CACHE_DIR)
                 try:
-                    os.makedirs(mylar.CACHE_DIR)
+                    filechecker.validateAndCreateDirectory(mylar.CACHE_DIR, True)
                     logger.info("Temporary NZB Download Directory successfully created at: " + mylar.CACHE_DIR)
-                except OSError.e:
-                    if e.errno != errno.EEXIST:
-                        raise
+                except OSError:
+                    raise
 
             #save the nzb grabbed, so we can bypass all the 'send-url' crap.
             if not nzbname.endswith('.nzb'):
@@ -1825,7 +1960,11 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
             try:
                 # only nzb providers will have a filen, try it and pass exception
                 if filen is None:
-                    return FailedMark(ComicID=ComicID, IssueID=IssueID, id=nzbid, nzbname=nzbname, prov=nzbprov)
+                    if IssueID is None:
+                        logger.fdebug('One-off mode was initiated - Failed Download handling for : ' + ComicName + ' #' + str(IssueNumber))
+                        comicinfo = {"ComicName":   ComicName,
+                                     "IssueNumber": IssueNumber}
+                        return FailedMark(ComicID=ComicID, IssueID=IssueID, id=nzbid, nzbname=nzbname, prov=nzbprov, oneoffinfo=comicinfo)
             except:
                 pass
             call_the_fail = Failed.FailedProcessor(nzb_name=nzbname, id=nzbid, issueid=IssueID, comicid=ComicID, prov=tmpprov)
@@ -1851,7 +1990,7 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
 
     #blackhole
     sent_to = None
-    if mylar.USE_BLACKHOLE and nzbprov != '32P' and nzbprov != 'KAT':
+    if mylar.USE_BLACKHOLE and nzbprov != '32P' and nzbprov != 'KAT' and nzbprov != 'Torznab':
         logger.fdebug("using blackhole directory at : " + str(mylar.BLACKHOLE_DIR))
         if os.path.exists(mylar.BLACKHOLE_DIR):
             #copy the nzb from nzbpath to blackhole dir.
@@ -1860,14 +1999,13 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
             except (OSError, IOError):
                 logger.warn('Failed to move nzb into blackhole directory - check blackhole directory and/or permissions.')
                 return "blackhole-fail"
-
             logger.fdebug("filename saved to your blackhole as : " + nzbname)
             logger.info(u"Successfully sent .nzb to your Blackhole directory : " + os.path.join(mylar.BLACKHOLE_DIR, nzbname))
             sent_to = "your Blackhole Directory"
     #end blackhole
 
     #torrents (32P & KAT)
-    elif nzbprov == '32P' or nzbprov == 'KAT':
+    elif nzbprov == '32P' or nzbprov == 'KAT' or nzbprov == 'Torznab':
         logger.fdebug("sending .torrent to watchdir.")
         logger.fdebug("ComicName:" + ComicName)
         logger.fdebug("link:" + link)
@@ -1879,7 +2017,17 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
         if rcheck == "fail":
             if mylar.FAILED_DOWNLOAD_HANDLING:
                 logger.error('Unable to send torrent to client. Assuming incomplete link - sending to Failed Handler and continuing search.')
-                return FailedMark(ComicID=ComicID, IssueID=IssueID, id=nzbid, nzbname=nzbname, prov=nzbprov)
+                if IssueID is None:
+                    logger.fdebug('One-off mode was initiated - Failed Download handling for : ' + ComicName + ' #' + str(IssueNumber))
+                    comicinfo = {"ComicName":   ComicName,
+                                 "IssueNumber": IssueNumber}
+                else:
+                    comicinfo_temp = {"ComicName":     comicinfo[0]['ComicName'],
+                                      "modcomicname":  comicinfo[0]['modcomicname'],
+                                      "IssueNumber":   comicinfo[0]['IssueNumber'],
+                                      "comyear":       comicinfo[0]['comyear']}
+                    comicinfo = comicinfo_temp
+                return FailedMark(ComicID=ComicID, IssueID=IssueID, id=nzbid, nzbname=nzbname, prov=nzbprov, oneoffinfo=comicinfo)
             else:
                 logger.error('Unable to send torrent - check logs and settings (this would be marked as a BAD torrent if Failed Handling was enabled)')
                 return "torrent-fail"
@@ -1939,37 +2087,69 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
                 mylar.DOWNLOAD_APIKEY = hashlib.sha224(str(random.getrandbits(256))).hexdigest()[0:32]
 
             #generate the mylar host address if applicable.
+            if mylar.ENABLE_HTTPS:
+                proto = 'https://'
+            else:
+                proto = 'http://'
+
+            if mylar.HTTP_ROOT is None:
+                hroot = '/'
+            elif mylar.HTTP_ROOT.endswith('/'):
+                hroot = mylar.HTTP_ROOT
+            else:
+                if mylar.HTTP_ROOT != '/':
+                    hroot = mylar.HTTP_ROOT + '/'
+                else:
+                    hroot = mylar.HTTP_ROOT
+
+            if mylar.LOCAL_IP is None:
+                #if mylar's local, get the local IP using socket.
+                try:
+                    import socket
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(('8.8.8.8', 80))
+                    mylar.LOCAL_IP = s.getsockname()[0]
+                    s.close()
+                except:
+                    logger.warn('Unable to determine local IP. Defaulting to host address for Mylar provided as : ' + str(mylar.HTTP_HOST))
+
             if mylar.HOST_RETURN:
-                #from lib.pystun import as stun
-                #sip = '0.0.0.0'
-                #port = int(mylar.HTTP_PORT)
-                #try:
-                #    nat_type, ext_ip, ext_port = stun.get_ip_info(sip,port)
-                #except:
-                #    logger.warn('Unable to retrieve External IP.')
-                
+                #mylar has the return value already provided (easier and will work if it's right)
                 if mylar.HOST_RETURN.endswith('/'):
                     mylar_host = mylar.HOST_RETURN
                 else:
                     mylar_host = mylar.HOST_RETURN + '/'
-        
-            else:
-                if mylar.ENABLE_HTTPS:
-                    proto = 'https://'
-                else:
-                    proto = 'http://'
 
-                if mylar.HTTP_ROOT is None:
-                    hroot = '/'
-                elif mylar.HTTP_ROOT.endswith('/'):
-                    hroot = mylar.HTTP_ROOT
+            elif mylar.SAB_TO_MYLAR:
+                #if sab & mylar are on different machines, check to see if they are local or external IP's provided for host.
+                if mylar.HTTP_HOST == 'localhost' or mylar.HTTP_HOST == '0.0.0.0' or mylar.HTTP_HOST.startswith('10.') or mylar.HTTP_HOST.startswith('192.') or mylar.HTTP_HOST.startswith('172.'):
+                    #if mylar's local, use the local IP already assigned to LOCAL_IP.
+                    mylar_host = proto + str(mylar.LOCAL_IP) + ':' + str(mylar.HTTP_PORT) + hroot
                 else:
-                    if mylar.HTTP_ROOT != '/':
-                        hroot = mylar.HTTP_ROOT + '/'
+                    if mylar.EXT_IP is None:
+                        #if mylar isn't local, get the external IP using pystun.
+                        import lib.pystun as stun
+                        sip = mylar.HTTP_HOST
+                        port = int(mylar.HTTP_PORT)
+                        try:
+                            nat_type, ext_ip, ext_port = stun.get_ip_info(sip,port)
+                            mylar_host = proto + str(ext_ip) + ':' + str(mylar.HTTP_PORT) + hroot
+                            mylar.EXT_IP = ext_ip
+                        except:
+                            logger.warn('Unable to retrieve External IP - try using the host_return option in the config.ini.')
+                            mylar_host = proto + str(mylar.HTTP_HOST) + ':' + str(mylar.HTTP_PORT) + hroot
                     else:
-                        hroot = mylar.HTTP_ROOT
-                mylar_host = proto + str(mylar.HTTP_HOST) + ':' + str(mylar.HTTP_PORT) + hroot
+                        mylar_host = proto + str(mylar.EXT_IP) + ':' + str(mylar.HTTP_PORT) + hroot
 
+            else:
+                #if all else fails, drop it back to the basic host:port and try that.
+                if mylar.LOCAL_IP is None:
+                    tmp_host = mylar.HTTP_HOST
+                else:
+                    tmp_host = mylar.LOCAL_IP
+                mylar_host = proto + str(tmp_host) + ':' + str(mylar.HTTP_PORT) + hroot
+
+                    
             fileURL = mylar_host + 'api?apikey=' + mylar.DOWNLOAD_APIKEY + '&cmd=downloadNZB&nzbname=' + nzbname
 
             tmpapi = tmpapi + SABtype
@@ -2004,8 +2184,6 @@ def searcher(nzbprov, nzbname, comicinfo, link, IssueID, ComicID, tmpprov, direc
                 disable_warnings()
             except:
                 logger.warn('Unable to disable https warnings. Expect some spam if using https nzb providers.')
-
-            import lib.requests as requests
 
             try:
                 requests.put(tmpapi, verify=False)
@@ -2078,12 +2256,12 @@ def notify_snatch(nzbname, sent_to, modcomicname, comyear, IssueNumber, nzbprov)
 
     return
 
-def FailedMark(IssueID, ComicID, id, nzbname, prov):
+def FailedMark(IssueID, ComicID, id, nzbname, prov, oneoffinfo=None):
         # Used to pass a failed attempt at sending a download to a client, to the failed handler, and then back again to continue searching.
 
         from mylar import Failed
 
-        FailProcess = Failed.FailedProcessor(issueid=IssueID, comicid=ComicID, id=id, nzb_name=nzbname, prov=prov)
+        FailProcess = Failed.FailedProcessor(issueid=IssueID, comicid=ComicID, id=id, nzb_name=nzbname, prov=prov, oneoffinfo=oneoffinfo)
         Markit = FailProcess.markFailed()
 
         if prov == '32P' or prov == 'KAT': return "torrent-fail"
@@ -2245,7 +2423,7 @@ def generate_id(nzbprov, link):
         url_parts = urlparse.urlparse(link)
         path_parts = url_parts[2].rpartition('/')
         nzbid = path_parts[0].rsplit('/', 1)[1]
-    elif nzbprov == 'newznab':
+    elif nzbprov == 'newznab':      
         #if in format of http://newznab/getnzb/<id>.nzb&i=1&r=apikey
         tmpid = urlparse.urlparse(link)[4]  #param 4 is the query string from the url.
         if 'warp' in urlparse.urlparse(link)[2] and 'x=' in tmpid:
@@ -2256,6 +2434,16 @@ def generate_id(nzbprov, link):
             # for the geek in all of us...
             st = tmpid.find('&id')
             end = tmpid.find('&', st +1)
+            if end == -1: 
+                end = len(tmpid)
             nzbid = re.sub('&id=', '', tmpid[st:end]).strip()
+    elif nzbprov == 'Torznab':
+        if mylar.TORZNAB_HOST.endswith('/'):
+            tmphost = mylar.TORZNAB_HOST + 'download/'
+        else:
+            tmphost = mylar.TORZNAB_HOST + '/download/'
+        tmpline = re.sub(tmphost, '', tmphost).strip()
+        tmpidend = tmpline.find('/')
+        nzbid = tmpline[:tmpidend]
 
     return nzbid

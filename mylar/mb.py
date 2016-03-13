@@ -21,10 +21,11 @@ import threading
 import platform
 import urllib, urllib2
 from xml.dom.minidom import parseString, Element
+import lib.requests as requests
 
 import mylar
 from mylar import logger, db, cv
-from mylar.helpers import multikeysort, replace_all, cleanName, cvapi_check, listLibrary
+from mylar.helpers import multikeysort, replace_all, cleanName, listLibrary
 import httplib
 
 mb_lock = threading.Lock()
@@ -57,27 +58,25 @@ def pullsearch(comicapi, comicquery, offset, explicit, type):
             u_comicquery = re.sub("%20AND%20", "%20", u_comicquery)
         PULLURL = mylar.CVURL + str(type) + 's?api_key=' + str(comicapi) + '&filter=name:' + u_comicquery + '&field_list=id,name,start_year,site_detail_url,count_of_issues,image,publisher,deck,description&format=xml&offset=' + str(offset) # 2012/22/02 - CVAPI flipped back to offset instead of page
     #all these imports are standard on most modern python implementations
-    #CV API Check here.
-    #logger.info('PULLURL:' + PULLURL)
-    if mylar.CVAPI_COUNT == 0 or mylar.CVAPI_COUNT >= mylar.CVAPI_MAX:
-        chkit = cvapi_check()
-        if chkit == False:
-            return 'apireached'
+    #logger.info('MB.PULLURL:' + PULLURL)
+
+    #new CV API restriction - one api request / second.
+    if mylar.CVAPI_RATE is None or mylar.CVAPI_RATE < 2:
+        time.sleep(2)
+    else:
+        time.sleep(mylar.CVAPI_RATE)
+
     #download the file:
+    payload = None
+    verify = False
+
     try:
-        file = urllib2.urlopen(PULLURL)
-    except urllib2.HTTPError, err:
-        logger.error('err : ' + str(err))
-        logger.error("There was a major problem retrieving data from ComicVine - on their end. You'll have to try again later most likely.")
+        r = requests.get(PULLURL, params=payload, verify=verify, headers=mylar.CV_HEADERS)
+    except Exception, e:
+        logger.warn('Error fetching data from ComicVine: %s' % (e))
         return
-    #increment CV API counter.
-    mylar.CVAPI_COUNT +=1
-    #convert to string:
-    data = file.read()
-    #close file because we dont need it anymore:
-    file.close()
-    #parse the xml you downloaded
-    dom = parseString(data)
+
+    dom = parseString(r.content) #(data)
     return dom
 
 def findComic(name, mode, issue, limityear=None, explicit=None, type=None):
@@ -88,8 +87,8 @@ def findComic(name, mode, issue, limityear=None, explicit=None, type=None):
     comiclist = []
     arcinfolist = []
     
-    chars = set('!?*')
-    if any((c in chars) for c in name):
+    chars = set('!?*&-')
+    if any((c in chars) for c in name) or 'annual' in name:
         name = '"' +name +'"'
 
     #print ("limityear: " + str(limityear))
@@ -104,6 +103,10 @@ def findComic(name, mode, issue, limityear=None, explicit=None, type=None):
         explicit = 'all'
 
     #OR
+    if ' and ' in comicquery.lower():
+        logger.fdebug('Enforcing exact naming match due to operator in title (and)')
+        explicit = 'all'
+
     if explicit == 'loose':
         logger.fdebug('Changing to loose mode - this will match ANY of the search words')
         comicquery = name.replace(" ", " OR ")
@@ -112,7 +115,7 @@ def findComic(name, mode, issue, limityear=None, explicit=None, type=None):
         comicquery=name.replace(" ", " AND ")
     else:
         logger.fdebug('Default search mode - this will match on ALL search words')
-        comicquery = name.replace(" ", " AND ")
+        #comicquery = name.replace(" ", " AND ")
         explicit = 'all'
 
 
@@ -129,12 +132,13 @@ def findComic(name, mode, issue, limityear=None, explicit=None, type=None):
     searched = pullsearch(comicapi, comicquery, 0, explicit, type)
     if searched is None:
         return False
-    elif searched == 'apireached':
-        return 'apireached'
     totalResults = searched.getElementsByTagName('number_of_total_results')[0].firstChild.wholeText
     logger.fdebug("there are " + str(totalResults) + " search results...")
     if not totalResults:
         return False
+    if int(totalResults) > 1000:
+        logger.warn('Search returned more than 1000 hits [' + str(totalResults) + ']. Only displaying first 2000 results - use more specifics or the exact ComicID if required.')
+        totalResults = 1000
     countResults = 0
     while (countResults < int(totalResults)):
         #logger.fdebug("querying " + str(countResults))
@@ -148,8 +152,6 @@ def findComic(name, mode, issue, limityear=None, explicit=None, type=None):
                 offsetcount = countResults
 
             searched = pullsearch(comicapi, comicquery, offsetcount, explicit, type)
-            if searched == 'apireached':
-                return 'apireached'
         comicResults = searched.getElementsByTagName(type) #('volume')
         body = ''
         n = 0
@@ -355,21 +357,31 @@ def storyarcinfo(xmlid):
     #respawn to the exact id for the story arc and count the # of issues present.
     ARCPULL_URL = mylar.CVURL + 'story_arc/4045-' + str(xmlid) + '/?api_key=' + str(comicapi) + '&field_list=issues,name,first_appeared_in_issue,deck,image&format=xml&offset=0'
     logger.fdebug('arcpull_url:' + str(ARCPULL_URL))
-    if mylar.CVAPI_COUNT == 0 or mylar.CVAPI_COUNT >= mylar.CVAPI_MAX:
-        chkit = cvapi_check()
-        if chkit == False:
-            return 'apireached'
-    try:
-        file = urllib2.urlopen(ARCPULL_URL)
-    except urllib2.HTTPError, err:
-        logger.error('err : ' + str(err))
-        logger.error('There was a major problem retrieving data from ComicVine - on their end.')
-        return
 
-    mylar.CVAPI_COUNT +=1
-    arcdata = file.read()
-    file.close()
-    arcdom = parseString(arcdata)
+    #new CV API restriction - one api request / second.
+    if mylar.CVAPI_RATE is None or mylar.CVAPI_RATE < 2:
+        time.sleep(2)
+    else:
+        time.sleep(mylar.CVAPI_RATE)
+
+    #download the file:
+    payload = None
+    verify = False
+
+    try:
+        r = requests.get(ARCPULL_URL, params=payload, verify=verify, headers=mylar.CV_HEADERS)
+    except Exception, e:
+        logger.warn('Error fetching data from ComicVine: %s' % (e))
+        return
+#    try:
+#        file = urllib2.urlopen(ARCPULL_URL)
+#    except urllib2.HTTPError, err:
+#        logger.error('err : ' + str(err))
+#        logger.error('There was a major problem retrieving data from ComicVine - on their end.')
+#        return
+#    arcdata = file.read()
+#    file.close()
+    arcdom = parseString(r.content) #(arcdata)
 
     try:
         logger.fdebug('story_arc ascension')
@@ -377,15 +389,17 @@ def storyarcinfo(xmlid):
         issuedom = arcdom.getElementsByTagName('issue')
         isc = 0
         arclist = ''
+        ordernum = 1
         for isd in issuedom:
             zeline = isd.getElementsByTagName('id')
             isdlen = len( zeline )
             isb = 0
             while ( isb < isdlen):
                 if isc == 0:
-                    arclist = str(zeline[isb].firstChild.wholeText).strip()
+                    arclist = str(zeline[isb].firstChild.wholeText).strip() + ',' + str(ordernum)
                 else:
-                    arclist += '|' + str(zeline[isb].firstChild.wholeText).strip()
+                    arclist += '|' + str(zeline[isb].firstChild.wholeText).strip() + ',' + str(ordernum)
+                ordernum+=1 
                 isb+=1
 
             isc+=1
@@ -449,3 +463,4 @@ def storyarcinfo(xmlid):
             }
 
     return arcinfo
+

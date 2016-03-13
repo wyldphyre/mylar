@@ -26,6 +26,7 @@ import subprocess
 import time
 import lib.simplejson as simplejson
 import json
+import lib.requests as requests
 
 # This was obviously all taken from headphones with great appreciation :)
 
@@ -76,41 +77,33 @@ class PROWL:
                 logger.info(module + ' Prowl notification failed.')
                 return False
 
-    def updateLibrary(self):
-        #For uniformity reasons not removed
-        return
-
-    def test(self, keys, priority):
-
-        self.enabled = True
-        self.keys = keys
-        self.priority = priority
-
+    def test_notify(self):
         self.notify('ZOMG Lazors Pewpewpew!', 'Test Message')
 
 class NMA:
 
     def __init__(self):
 
+        self.NMA_URL = "https://www.notifymyandroid.com/publicapi/notify"
         self.apikey = mylar.NMA_APIKEY
         self.priority = mylar.NMA_PRIORITY
 
+        self._session = requests.Session()
+
     def _send(self, data, module):
 
-        url_data = urllib.urlencode(data)
-        url = 'https://www.notifymyandroid.com/publicapi/notify'
+        r = self._session.post(self.NMA_URL, data=data)
 
-        req = urllib2.Request(url, url_data)
-
-        try:
-            handle = urllib2.urlopen(req)
-        except Exception, e:
-            logger.warn(module + ' Error opening NotifyMyAndroid url: ' % e)
-            return
-
-        response = handle.read().decode(mylar.SYS_ENCODING)
-
-        return response
+        logger.fdebug('[NMA] Status code returned: ' + str(r.status_code))
+        if r.status_code == 200:
+            logger.info(module + ' NotifyMyAndroid notifications sent.')
+            return True
+        elif r.status_code >= 400 and r.status_code < 500:
+            logger.error(module + ' NotifyMyAndroid request failed: %s' % r.content)
+            return False
+        else:
+            logger.error(module + ' NotifyMyAndroid  notification failed serverside.')
+            return False
 
     def notify(self, snline=None, prline=None, prline2=None, snatched_nzb=None, sent_to=None, prov=None, module=None):
 
@@ -129,7 +122,7 @@ class NMA:
             event = prline
             description = prline2
 
-        data = {'apikey': apikey, 'application': 'Mylar', 'event': event, 'description': description, 'priority': priority}
+        data = {'apikey': apikey, 'application': 'Mylar', 'event': event.encode('utf-8'), 'description': description.encode('utf-8'), 'priority': priority}
 
         logger.info(module + ' Sending notification request to NotifyMyAndroid')
         request = self._send(data, module)
@@ -137,11 +130,19 @@ class NMA:
         if not request:
             logger.warn(module + ' Error sending notification request to NotifyMyAndroid')
 
+    def test_notify(self):
+        event = 'Test Message'
+        description = 'ZOMG Lazors PewPewPew!'
+        data = {'apikey': self.apikey, 'application': 'Mylar', 'event': event.encode('utf-8'), 'description': description.encode('utf-8'), 'priority': 2}
+
+        return self._send(data,'[NOTIFIER]')
+
 # 2013-04-01 Added Pushover.net notifications, based on copy of Prowl class above.
 # No extra care has been put into API friendliness at the moment (read: https://pushover.net/api#friendly)
 class PUSHOVER:
 
     def __init__(self):
+        self.PUSHOVER_URL = 'https://api.pushover.net/1/messages.json'
         self.enabled = mylar.PUSHOVER_ENABLED
         if mylar.PUSHOVER_APIKEY is None or mylar.PUSHOVER_APIKEY == 'None':
             self.apikey = 'a1KZ1L7d8JKdrtHcUR6eFoW2XGBmwG'
@@ -149,16 +150,9 @@ class PUSHOVER:
             self.apikey = mylar.PUSHOVER_APIKEY
         self.userkey = mylar.PUSHOVER_USERKEY
         self.priority = mylar.PUSHOVER_PRIORITY
-        # other API options:
-        # self.device_id = mylar.PUSHOVER_DEVICE_ID
-        # device - option for specifying which of your registered devices Mylar should send to. No option given, it sends to all devices on Pushover (default)
-        # URL / URL_TITLE (both for use with the COPS/OPDS server I'm building maybe?)
-        # Sound - name of soundfile to override default sound choice
 
-    # not sure if this is needed for Pushover
-
-    #def conf(self, options):
-    # return cherrypy.config['config'].get('Pushover', options)
+        self._session = requests.Session()
+        self._session.headers = {'Content-type': "application/x-www-form-urlencoded"}
 
     def notify(self, message, event, module=None):
         if not mylar.PUSHOVER_ENABLED:
@@ -167,46 +161,26 @@ class PUSHOVER:
             module = ''
         module += '[NOTIFIER]'
 
-        http_handler = HTTPSConnection("api.pushover.net:443")
-
         data = {'token': mylar.PUSHOVER_APIKEY,
                 'user': mylar.PUSHOVER_USERKEY,
                 'message': message.encode("utf-8"),
                 'title': event,
                 'priority': mylar.PUSHOVER_PRIORITY}
 
-        http_handler.request("POST",
-                                "/1/messages.json",
-                                body = urlencode(data),
-                                headers = {'Content-type': "application/x-www-form-urlencoded"}
-                                )
-        response = http_handler.getresponse()
-        request_status = response.status
+        r = self._session.post(self.PUSHOVER_URL, data=data, verify=True)
 
-        logger.fdebug(u"PushOver response status: %r" % request_status)
-        logger.fdebug(u"PushOver response headers: %r" % response.getheaders())
-        logger.fdebug(u"PushOver response body: %r" % response.read())
-
-
-        if request_status == 200:
-                logger.info(module + ' Pushover notifications sent.')
-                return True
-        elif request_status == 401:
-                logger.info(module + 'Pushover auth failed: %s' % response.reason)
-                return False
+        if r.status_code == 200:
+            logger.info(module + ' PushOver notifications sent.')
+            return True
+        elif r.status_code >= 400 and r.status_code < 500:
+            logger.error(module + ' PushOver request failed: %s' % r.content)
+            return False
         else:
-                logger.info(module + ' Pushover notification failed.')
-                return False
+            logger.error(module + ' PushOver notification failed serverside.')
+            return False
 
-    def test(self, apikey, userkey, priority):
-
-        self.enabled = True
-        self.apikey = apikey
-        self.userkey = userkey
-        self.priority = priority
-
-        self.notify('ZOMG Lazors Pewpewpew!', 'Test Message')
-
+    def test_notify(self):
+        return self.notify(message='Release the Ninjas!',event='Test Message')
 
 class BOXCAR:
 
@@ -284,11 +258,19 @@ class BOXCAR:
         self._sendBoxcar(message, title, module)
         return True
 
+    def test_notify(self):
+        self.notify(prline='Test Message',prline2='ZOMG Lazors Pewpewpew!')
+
 class PUSHBULLET:
 
     def __init__(self):
+        self.PUSH_URL = "https://api.pushbullet.com/v2/pushes"
         self.apikey = mylar.PUSHBULLET_APIKEY
         self.deviceid = mylar.PUSHBULLET_DEVICEID
+        self._json_header = {'Content-Type': 'application/json',
+                             'Authorization': 'Basic %s' % base64.b64encode(mylar.PUSHBULLET_APIKEY + ":")}
+        self._session = requests.Session()
+        self._session.headers.update(self._json_header)
 
     def get_devices(self, api):
         return self.notify(method="GET")
@@ -299,19 +281,20 @@ class PUSHBULLET:
         if module is None:
             module = ''
         module += '[NOTIFIER]'
+        
+#        http_handler = HTTPSConnection("api.pushbullet.com")
 
-        http_handler = HTTPSConnection("api.pushbullet.com")
+#        if method == 'GET':
+#            uri = '/v2/devices'
+#        else:
+#            method = 'POST'
+#            uri = '/v2/pushes'
+
+#        authString = base64.b64encode(self.apikey + ":")
 
         if method == 'GET':
-            uri = '/v2/devices'
-        else:
-            method = 'POST'
-            uri = '/v2/pushes'
-
-        authString = base64.b64encode(self.apikey + ":")
-
-        if method == 'GET':
-            http_handler.request(method, uri, None, headers={'Authorization': 'Basic %s:' % authString})
+            pass
+#           http_handler.request(method, uri, None, headers={'Authorization': 'Basic %s:' % authString})
         else:
             if snatched:
                 if snatched[-1] == '.': snatched = snatched[:-1]
@@ -325,37 +308,21 @@ class PUSHBULLET:
                     'title': event.encode('utf-8'), #"mylar",
                     'body': message.encode('utf-8')}
 
-        http_handler.request("POST",
-                                "/v2/pushes",
-                                headers = {'Content-type': "application/json",
-                                           'Authorization': 'Basic %s' % base64.b64encode(mylar.PUSHBULLET_APIKEY + ":")},
-                                body = json.dumps(data))
-
-        response = http_handler.getresponse()
-        request_body = response.read()
-        request_status = response.status
-        #logger.fdebug(u"PushBullet response status: %r" % request_status)
-        #logger.fdebug(u"PushBullet response headers: %r" % response.getheaders())
-        #logger.fdebug(u"PushBullet response body: %r" % response.read())
-
-        if request_status == 200:
+        r = self._session.post(self.PUSH_URL, data=json.dumps(data))
+        
+        if r.status_code == 200:
             if method == 'GET':
-                return request_body
+                return r.json()
             else:
                 logger.info(module + ' PushBullet notifications sent.')
                 return True
-        elif request_status >= 400 and request_status < 500:
-            logger.error(module + ' PushBullet request failed: %s' % response.reason)
+        elif r.status_code >= 400 and r.status_code < 500:
+            logger.error(module + ' PushBullet request failed: %s' % r.content)
             return False
         else:
             logger.error(module + ' PushBullet notification failed serverside.')
             return False
 
-    def test(self, apikey, deviceid):
-
-        self.enabled = True
-        self.apikey = apikey
-        self.deviceid = deviceid
-
-        self.notify('Main Screen Activate', 'Test Message')
+    def test_notify(self):
+        return self.notify(prline='Test Message', prline2='Release the Ninjas!')
 

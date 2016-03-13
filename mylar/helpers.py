@@ -239,7 +239,7 @@ def decimal_issue(iss):
         deciss = (int(iss_b4dec) * 1000) + issdec
     return deciss, dec_except
 
-def rename_param(comicid, comicname, issue, ofilename, comicyear=None, issueid=None, annualize=None):
+def rename_param(comicid, comicname, issue, ofilename, comicyear=None, issueid=None, annualize=None, arc=False):
             import db, logger
             myDB = db.DBConnection()
             logger.fdebug('comicid: ' + str(comicid))
@@ -266,14 +266,24 @@ def rename_param(comicid, comicname, issue, ofilename, comicyear=None, issueid=N
 
             if issueid is None:
                 logger.fdebug('annualize is ' + str(annualize))
-                if annualize is None:
-                    chkissue = myDB.selectone("SELECT * from issues WHERE ComicID=? AND Issue_Number=?", [comicid, issue]).fetchone()
+                if arc:
+                    #this has to be adjusted to be able to include story arc issues that span multiple arcs
+                    chkissue = myDB.selectone("SELECT * from readinglist WHERE ComicID=? AND Issue_Number=?", [comicid, issue]).fetchone()
                 else:
-                    chkissue = myDB.selectone("SELECT * from annuals WHERE ComicID=? AND Issue_Number=?", [comicid, issue]).fetchone()
+                    if annualize is None:
+                        chkissue = myDB.selectone("SELECT * from issues WHERE ComicID=? AND Issue_Number=?", [comicid, issue]).fetchone()
+                    else:
+                        chkissue = myDB.selectone("SELECT * from annuals WHERE ComicID=? AND Issue_Number=?", [comicid, issue]).fetchone()
 
                 if chkissue is None:
                     #rechk chkissue against int value of issue #
-                    chkissue = myDB.selectone("SELECT * from issues WHERE ComicID=? AND Int_IssueNumber=?", [comicid, issuedigits(issue)]).fetchone()
+                    if arc:
+                        chkissue = myDB.selectone("SELECT * from readinglist WHERE ComicID=? AND Int_IssueNumber=?", [comicid, issuedigits(issue)]).fetchone()
+                    else:
+                        chkissue = myDB.selectone("SELECT * from issues WHERE ComicID=? AND Int_IssueNumber=?", [comicid, issuedigits(issue)]).fetchone()
+                        if annualize:
+                            chkissue = myDB.selectone("SELECT * from annuals WHERE ComicID=? AND Int_IssueNumber=?", [comicid, issuedigits(issue)]).fetchone()
+
                     if chkissue is None:
                         if chkissue is None:
                             logger.error('Invalid Issue_Number - please validate.')
@@ -286,17 +296,60 @@ def rename_param(comicid, comicname, issue, ofilename, comicyear=None, issueid=N
 
             #use issueid to get publisher, series, year, issue number
             logger.fdebug('issueid is now : ' + str(issueid))
-            issuenzb = myDB.selectone("SELECT * from issues WHERE ComicID=? AND IssueID=?", [comicid, issueid]).fetchone()
-            if issuenzb is None:
-                logger.fdebug('not an issue, checking against annuals')
-                issuenzb = myDB.selectone("SELECT * from annuals WHERE ComicID=? AND IssueID=?", [comicid, issueid]).fetchone()
+            if arc:
+                issuenzb = myDB.selectone("SELECT * from readinglist WHERE ComicID=? AND IssueID=? AND StoryArc=?", [comicid, issueid, arc]).fetchone()
+            else:
+                issuenzb = myDB.selectone("SELECT * from issues WHERE ComicID=? AND IssueID=?", [comicid, issueid]).fetchone()
                 if issuenzb is None:
-                    logger.fdebug('Unable to rename - cannot locate issue id within db')
-                    return
+                    logger.fdebug('not an issue, checking against annuals')
+                    issuenzb = myDB.selectone("SELECT * from annuals WHERE ComicID=? AND IssueID=?", [comicid, issueid]).fetchone()
+                    if issuenzb is None:
+                        logger.fdebug('Unable to rename - cannot locate issue id within db')
+                        return
+                    else:
+                        annualize = True
+
+            if issuenzb is None:
+                logger.fdebug('Unable to rename - cannot locate issue id within db')
+                return
+
+            #remap the variables to a common factor.
+            if arc:
+                issuenum = issuenzb['IssueNumber']
+                issuedate = issuenzb['IssueDate']
+                publisher = issuenzb['IssuePublisher']
+                series = issuenzb['ComicName']
+                seriesfilename = series   #Alternate FileNaming is not available with story arcs.
+                seriesyear = issuenzb['SeriesYear']
+                arcdir = filesafe(issuenzb['StoryArc'])
+                if mylar.REPLACE_SPACES:
+                    arcdir = arcdir.replace(' ', mylar.REPLACE_CHAR)
+                if mylar.STORYARCDIR:
+                    storyarcd = os.path.join(mylar.DESTINATION_DIR, "StoryArcs", arcdir)
+                    logger.fdebug('Story Arc Directory set to : ' + storyarcd)
                 else:
-                    annualize = True
+                    logger.fdebug('Story Arc Directory set to : ' + mylar.GRABBAG_DIR)
+                    storyarcd = os.path.join(mylar.DESTINATION_DIR, mylar.GRABBAG_DIR)
+
+                comlocation = storyarcd
+                comversion = None   #need to populate this.
+
+            else:
+                issuenum = issuenzb['Issue_Number']
+                issuedate = issuenzb['IssueDate']
+                comicnzb= myDB.selectone("SELECT * from comics WHERE comicid=?", [comicid]).fetchone()
+                publisher = comicnzb['ComicPublisher']
+                series = comicnzb['ComicName']
+                if comicnzb['AlternateFileName'] is None or comicnzb['AlternateFileName'] == 'None':
+                    seriesfilename = series
+                else:
+                    seriesfilename = comicnzb['AlternateFileName']
+                    logger.fdebug('Alternate File Naming has been enabled for this series. Will rename series title to : ' + seriesfilename)
+                seriesyear = comicnzb['ComicYear']
+                comlocation = comicnzb['ComicLocation']
+                comversion = comicnzb['ComicVersion']
+
             #comicid = issuenzb['ComicID']
-            issuenum = issuenzb['Issue_Number']
             #issueno = str(issuenum).split('.')[0]
             issue_except = 'None'
             issue_exceptions = ['AU',
@@ -443,25 +496,14 @@ def rename_param(comicid, comicname, issue, ofilename, comicyear=None, issueid=N
                 logger.fdebug('issue length error - cannot determine length. Defaulting to None:  ' + str(prettycomiss))
 
             logger.fdebug('Pretty Comic Issue is : ' + str(prettycomiss))
-            issueyear = issuenzb['IssueDate'][:4]
-            month = issuenzb['IssueDate'][5:7].replace('-', '').strip()
+            issueyear = issuedate[:4]
+            month = issuedate[5:7].replace('-', '').strip()
             month_name = fullmonth(month)
             logger.fdebug('Issue Year : ' + str(issueyear))
-            comicnzb= myDB.selectone("SELECT * from comics WHERE comicid=?", [comicid]).fetchone()
-            publisher = comicnzb['ComicPublisher']
             logger.fdebug('Publisher: ' + str(publisher))
-            series = comicnzb['ComicName']
             logger.fdebug('Series: ' + str(series))
-            if comicnzb['AlternateFileName'] is None or comicnzb['AlternateFileName'] == 'None':
-                seriesfilename = series
-            else:
-                seriesfilename = comicnzb['AlternateFileName']
-                logger.fdebug('Alternate File Naming has been enabled for this series. Will rename series title to : ' + seriesfilename)
-            seriesyear = comicnzb['ComicYear']
             logger.fdebug('Year: '  + str(seriesyear))
-            comlocation = comicnzb['ComicLocation']
             logger.fdebug('Comic Location: ' + str(comlocation))
-            comversion = comicnzb['ComicVersion']
             if comversion is None:
                 comversion = 'None'
             #if comversion is None, remove it so it doesn't populate with 'None'
@@ -703,8 +745,10 @@ def updateComicLocation():
     if mylar.NEWCOM_DIR is not None:
         logger.info('Performing a one-time mass update to Comic Location')
         #create the root dir if it doesn't exist
-        mylar.filechecker.validateAndCreateDirectory(mylar.NEWCOM_DIR, create=True)
-
+        checkdirectory = mylar.filechecker.validateAndCreateDirectory(mylar.NEWCOM_DIR, create=True)
+        if not checkdirectory:
+            logger.warn('Error trying to validate/create directory. Aborting this process at this time.')
+            return
         dirlist = myDB.select("SELECT * FROM comics")
         comloc = []
 
@@ -1180,6 +1224,14 @@ def havetotals(refreshit=None):
                 recentstatus = 'Continuing'
             elif 'present' in comic['ComicPublished'].lower() or (today()[:4] in comic['LatestDate']):
                 latestdate = comic['LatestDate']
+                #pull-list f'd up the date by putting '15' instead of '2015' causing 500 server errors
+                if '-' in latestdate[:3]:
+                    st_date = latestdate.find('-')
+                    st_remainder = latestdate[st_date+1:]
+                    st_year = latestdate[:st_date]
+                    year = '20' + st_year
+                    latestdate = str(year) + '-' + str(st_remainder)
+                    #logger.fdebug('year set to: ' + latestdate)
                 c_date = datetime.date(int(latestdate[:4]), int(latestdate[5:7]), 1)
                 n_date = datetime.date.today()
                 recentchk = (n_date - c_date).days
@@ -1210,44 +1262,6 @@ def havetotals(refreshit=None):
                            "DateAdded":       comic['LastUpdated']})
 
         return comics
-
-def cvapi_check(web=None):
-    import logger
-    #if web is None:
-    #    logger.fdebug('[ComicVine API] ComicVine API Check Running...')
-    if mylar.CVAPI_TIME is None or mylar.CVAPI_TIME == '':
-        c_date = now()
-        c_obj_date = datetime.datetime.strptime(c_date, "%Y-%m-%d %H:%M:%S")
-        mylar.CVAPI_TIME = c_obj_date
-    else:
-        if isinstance(mylar.CVAPI_TIME, unicode):
-            c_obj_date = datetime.datetime.strptime(mylar.CVAPI_TIME, "%Y-%m-%d %H:%M:%S")
-        else:
-            c_obj_date = mylar.CVAPI_TIME
-    #if web is None: logger.fdebug('[ComicVine API] API Start Monitoring Time (~15mins): ' + str(mylar.CVAPI_TIME))
-    now_date = now()
-    n_date = datetime.datetime.strptime(now_date, "%Y-%m-%d %H:%M:%S")
-    #if web is None: logger.fdebug('[ComicVine API] Time now: ' + str(n_date))
-    absdiff = abs(n_date - c_obj_date)
-    mins = round(((absdiff.days * 24 * 60 * 60 + absdiff.seconds) / 60.0), 2)
-    apivalid = True
-    if mins < 15:
-        #if web is None: logger.info('[ComicVine API] Comicvine API count now at : ' + str(mylar.CVAPI_COUNT) + ' / ' + str(mylar.CVAPI_MAX) + ' in ' + str(mins) + ' minutes.')
-        if mylar.CVAPI_COUNT + 5 > mylar.CVAPI_MAX:
-            cvleft = 15 - mins
-            if web is None: logger.warn('[ComicVine API] You have already hit your API limit (' + str(mylar.CVAPI_MAX) + ' with ' + str(cvleft) + ' minutes left out of 15 minutes. Best be slowing down, cowboy.')
-            apivalid = False
-    elif mins > 15:
-        mylar.CVAPI_COUNT = 0
-        c_date = now()
-        mylar.CVAPI_TIME = datetime.datetime.strptime(c_date, "%Y-%m-%d %H:%M:%S")
-        #if web is None: logger.info('[ComicVine API] 15 minute API interval resetting [' + str(mylar.CVAPI_TIME) + ']. Resetting API count to : ' + str(mylar.CVAPI_COUNT))
-
-    if web is None:
-        return apivalid
-    else:
-        line = str(mylar.CVAPI_COUNT) + ' hits / ' + str(mins) + ' minutes'
-        return line
 
 def filesafe(comic):
     import unicodedata
@@ -1287,13 +1301,13 @@ def IssueDetails(filelocation, IssueID=None):
                #print str(data)
                issuetag = 'xml'
             #looks for the first page and assumes it's the cover. (Alternate covers handled later on)
-            elif any(['000.' in infile, '00.' in infile]) and infile.endswith(pic_extensions):
+            elif any(['000.' in infile, '00.' in infile]) and infile.endswith(pic_extensions) and cover == "notfound":
                logger.fdebug('Extracting primary image ' + infile + ' as coverfile for display.')
                local_file = open(os.path.join(mylar.CACHE_DIR, 'temp.jpg'), "wb")
                local_file.write(inzipfile.read(infile))
                local_file.close
                cover = "found"
-            elif any(['00a' in infile, '00b' in infile, '00c' in infile, '00d' in infile, '00e' in infile]) and infile.endswith(pic_extensiosn):
+            elif any(['00a' in infile, '00b' in infile, '00c' in infile, '00d' in infile, '00e' in infile]) and infile.endswith(pic_extensions) and cover == "notfound":
                logger.fdebug('Found Alternate cover - ' + infile + ' . Extracting.')
                altlist = ('00a', '00b', '00c', '00d', '00e')
                for alt in altlist:
@@ -1304,7 +1318,7 @@ def IssueDetails(filelocation, IssueID=None):
                        cover = "found"
                        break
 
-            elif ('001.jpg' in infile or '001.png' in infile or '001.webp' in infile) and cover == "notfound":
+            elif any(['001.jpg' in infile, '001.png' in infile, '001.webp' in infile, '01.jpg' in infile, '01.png' in infile, '01.webp' in infile]) and cover == "notfound":
                logger.fdebug('Extracting primary image ' + infile + ' as coverfile for display.')
                local_file = open(os.path.join(mylar.CACHE_DIR, 'temp.jpg'), "wb")
                local_file.write(inzipfile.read(infile))
@@ -1343,6 +1357,10 @@ def IssueDetails(filelocation, IssueID=None):
                 series_title = result.getElementsByTagName('Series')[0].firstChild.wholeText
             except:
                 series_title = "None"
+            try:
+                series_volume = result.getElementsByTagName('Volume')[0].firstChild.wholeText
+            except:
+                series_volume = "None"
             try:
                 issue_number = result.getElementsByTagName('Number')[0].firstChild.wholeText
             except:
@@ -1415,17 +1433,25 @@ def IssueDetails(filelocation, IssueID=None):
                 pagecount = 0
             logger.fdebug("number of pages I counted: " + str(pagecount))
             i = 0
-            while (i < int(pagecount)):
-                pageinfo = result.getElementsByTagName('Page')[i].attributes
-                attrib = pageinfo.getNamedItem('Image')
-                logger.fdebug('Frontcover validated as being image #: ' + str(attrib.value))
-                att = pageinfo.getNamedItem('Type')
-                logger.fdebug('pageinfo: ' + str(pageinfo))
-                if att.value == 'FrontCover':
-                    logger.fdebug('FrontCover detected. Extracting.')
-                    break
-                i+=1
-    else:
+
+            try:
+                pageinfo = result.getElementsByTagName('Page')[0].attributes
+                if pageinfo: pageinfo_test == True
+            except:
+                pageinfo_test = False
+
+            if pageinfo_test:
+                while (i < int(pagecount)):
+                    pageinfo = result.getElementsByTagName('Page')[i].attributes
+                    attrib = pageinfo.getNamedItem('Image')
+                    logger.fdebug('Frontcover validated as being image #: ' + str(attrib.value))
+                    att = pageinfo.getNamedItem('Type')
+                    logger.fdebug('pageinfo: ' + str(pageinfo))
+                    if att.value == 'FrontCover':
+                        logger.fdebug('FrontCover detected. Extracting.')
+                        break
+                    i+=1
+    elif issuetag == 'comment':
         stripline = 'Archive:  ' + dstlocation
         data = re.sub(stripline, '', data.encode("utf-8")).strip()
         if data is None or data == '':
@@ -1454,6 +1480,10 @@ def IssueDetails(filelocation, IssueID=None):
         cover_artist = "None"
         penciller = "None"
         inker = "None"
+        try:
+            series_volume = dt['volume']
+        except:
+            series_volume = None
         for cl in dt['credits']:
             if cl['role'] == 'Editor':
                 if editor == "None": editor = cl['person']
@@ -1493,8 +1523,13 @@ def IssueDetails(filelocation, IssueID=None):
         except:
             pagecount = "None"
 
+    else:
+        logger.warn('Unable to locate any metadata within cbz file. Tag this file and try again if necessary.')
+        return
+
     issuedetails.append({"title":        issue_title,
                          "series":       series_title,
+                         "volume":       series_volume,
                          "issue_number": issue_number,
                          "summary":      summary,
                          "notes":        notes,
@@ -1586,9 +1621,22 @@ def duplicate_filecheck(filename, ComicID=None, IssueID=None, StoryArcID=None):
             logger.info('[DUPECHECK] Unable to find corresponding Issue within the DB. Do you still have the series on your watchlist?')
             return
 
+    series = myDB.selectone("SELECT * FROM comics WHERE ComicID=?", [dupchk['ComicID']]).fetchone()
+
+    #if it's a retry and the file was already snatched, the status is Snatched and won't hit the dupecheck.
+    #rtnval will be one of 3: 
+    #'write' - write new file
+    #'dupe_file' - do not write new file as existing file is better quality
+    #'dupe_src' - write new file, as existing file is a lesser quality (dupe)
+    rtnval = []
     if dupchk['Status'] == 'Downloaded' or dupchk['Status'] == 'Archived':
+        try:
+            dupsize = dupchk['ComicSize']
+        except:
+            logger.info('[DUPECHECK] Duplication detection returned no hits as this is a new Snatch. This is not a duplicate.')
+            rtnval.append({'action':  "write"})
+
         logger.info('[DUPECHECK] Existing Status already set to ' + dupchk['Status'])
-        dupsize = dupchk['ComicSize']
         cid = []
         if dupsize is None:
             logger.info('[DUPECHECK] Existing filesize is 0 bytes as I cannot locate the orginal entry - it is probably archived.')
@@ -1602,11 +1650,14 @@ def duplicate_filecheck(filename, ComicID=None, IssueID=None, StoryArcID=None):
                     mylar.updater.dbUpdate(ComicIDList=cid, calledfrom='dupechk')
                     return duplicate_filecheck(filename, ComicID, IssueID, StoryArcID)
                 else:
-                    rtnval = "dupe"
+                    #not sure if this one is correct - should never actually get to this point.
+                    rtnval.append({'action':  "dupe_file",
+                                   'to_dupe': os.path.join(series['ComicLocation'], dupchk['Location'])})
             else:
-                rtnval = "dupe"
+                rtnval.append({'action':  "dupe_file",
+                               'to_dupe': os.path.join(series['ComicLocation'], dupchk['Location'])})
         else:
-            logger.info('[DUPECHECK] Existing file :' + dupchk['Location'] + ' has a filesize of : ' + str(dupsize) + ' bytes.')
+            logger.info('[DUPECHECK] Existing file within db :' + dupchk['Location'] + ' has a filesize of : ' + str(dupsize) + ' bytes.')
 
             #keywords to force keep / delete
             #this will be eventually user-controlled via the GUI once the options are enabled.
@@ -1615,8 +1666,9 @@ def duplicate_filecheck(filename, ComicID=None, IssueID=None, StoryArcID=None):
                 logger.info('[DUPECHECK] Existing filesize is 0 as I cannot locate the original entry.')
                 if dupchk['Status'] == 'Archived':
                     logger.info('[DUPECHECK] Assuming issue is Archived.')
-                    rtnval = "dupe"
-                    return
+                    rtnval.append({'action':  "dupe_file",
+                                   'to_dupe': filename})
+                    return rtnval
                 else:
                     logger.info('[DUPECHECK] Assuming 0-byte file - this one is gonna get hammered.')
 
@@ -1627,33 +1679,39 @@ def duplicate_filecheck(filename, ComicID=None, IssueID=None, StoryArcID=None):
                     if dupchk['Location'].endswith('.cbz'):
                         #keep dupechk['Location']
                         logger.info('[DUPECHECK-CBR PRIORITY] [#' + dupchk['Issue_Number'] + '] Retaining currently scanned in file : ' + dupchk['Location'])
-                        rtnval = "dupe"
+                        rtnval.append({'action':  "dupe_file",
+                                       'to_dupe': filename})
                     else:
                         #keep filename
                         logger.info('[DUPECHECK-CBR PRIORITY] [#' + dupchk['Issue_Number'] + '] Retaining newly scanned in file : ' + filename)
-                        rtnval = "write"
+                        rtnval.append({'action':  "dupe_src",
+                                       'to_dupe': os.path.join(series['ComicLocation'], dupchk['Location'])})
 
                 elif 'cbz' in mylar.DUPECONSTRAINT:
                     if dupchk['Location'].endswith('.cbr'):
                         #keep dupchk['Location']
                         logger.info('[DUPECHECK-CBZ PRIORITY] [#' + dupchk['Issue_Number'] + '] Retaining currently scanned in filename : ' + dupchk['Location'])
-                        rtnval = "dupe"
+                        rtnval.append({'action':  "dupe_file",
+                                       'to_dupe': filename})
                     else:
                         #keep filename
                         logger.info('[DUPECHECK-CBZ PRIORITY] [#' + dupchk['Issue_Number'] + '] Retaining newly scanned in filename : ' + filename)
-                        rtnval = "write"
+                        rtnval.append({'action':  "dupe_src",
+                                       'to_dupe': os.path.join(series['ComicLocation'], dupchk['Location'])})
 
             if mylar.DUPECONSTRAINT == 'filesize':
                 if filesz <= int(dupsize) and int(dupsize) != 0:
                     logger.info('[DUPECHECK-FILESIZE PRIORITY] [#' + dupchk['Issue_Number'] + '] Retaining currently scanned in filename : ' + dupchk['Location'])
-                    rtnval = "dupe"
+                    rtnval.append({'action':  "dupe_file",
+                                   'to_dupe': filename}) 
                 else:
                     logger.info('[DUPECHECK-FILESIZE PRIORITY] [#' + dupchk['Issue_Number'] + '] Retaining newly scanned in filename : ' + filename)
-                    rtnval = "write"
+                    rtnval.append({'action':  "dupe_src",
+                                   'to_dupe': os.path.join(series['ComicLocation'], dupchk['Location'])})
 
     else:
         logger.info('[DUPECHECK] Duplication detection returned no hits. This is not a duplicate of anything that I have scanned in as of yet.')
-        rtnval = "write"
+        rtnval.append({'action':  "write"})
     return rtnval
 
 def create_https_certificates(ssl_cert, ssl_key):
@@ -1691,15 +1749,21 @@ def create_https_certificates(ssl_cert, ssl_key):
 
     return True
 
-def torrent_create(site, linkid):
-    if site == '32P':
+def torrent_create(site, linkid, alt=None):
+    if site == '32P' or site == 'TOR':
         pass
     elif site == 'KAT':
         if 'http' in linkid:
-            #if it's being passed here with the http alread in, then it's an old rssdb entry and we can take it as is.
-            url = linkid
+            if alt is None:
+                #if it's being passed here with the http alread in, then it's an old rssdb entry and we can take it as is.
+                url = linkid
+            else:
+                url = re.sub('http://torcache.net/','http://torrage.com/', linkid).strip()
         else:
-            url = 'http://torcache.net/torrent/' + str(linkid) + '.torrent'
+            if alt is None:
+                url = 'http://torcache.net/torrent/' + str(linkid) + '.torrent'
+            else:
+                url = 'http://torrage.com/' + str(linkid) + '.torrent'
 
     return url
 
@@ -1734,6 +1798,53 @@ def parse_32pfeed(rssfeedline):
 
     return KEYS_32P
 
+#def file_ops(path,dst):
+#    # path = source path + filename
+#    # dst = destination path + filename
+
+#    #get the crc of the file prior to the operation and then compare after to ensure it's complete.
+#    crc_check = mylar.filechecker.crc(path)
+
+#    #will be either copy / move
+#    if mylar.FILE_OPS == 'copy':
+#        shutil.copy( path , dst )
+#        if crc_check == mylar.filechecker.crc(dst):
+#            return True
+#        else:
+#            return False
+#    elif mylar.FILE_OPS == 'move':
+#        shutil.move( path , dst )
+#        if crc_check == mylar.filechecker.crc(dst):
+#            return True
+#        else:
+#            return False
+
+#    elif mylar.FILE_OPS == 'hardlink':
+#        import sys
+
+#        # Open a file
+#        fd = os.open( path, os.O_RDWR|os.O_CREAT )
+#        os.close( fd )
+
+#        # Now create another copy of the above file.
+#        os.link( path, dst )
+
+#        print "Created hard link successfully!!"
+#        return True
+#    elif mylar.FILE_OPS ==  'softlink':
+#        try:
+#            os.symlink( path, dst )
+#        except OSError, e:
+#            if e.errno == errno.EEXIST:
+#                os.remove(dst)
+#                os.symlink( path, dst )
+#            else:
+#                raise e
+#                print 'Unable to create symlink.'
+#                return False
+#        return True
+#    else:
+#        return False
 
 from threading import Thread
 

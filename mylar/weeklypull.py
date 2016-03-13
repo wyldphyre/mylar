@@ -127,19 +127,23 @@ def pullit(forcecheck=None):
     prevcomic = ""
     previssue = ""
 
-    newrl = mylar.CACHE_DIR + "/newreleases.txt"
+    newrl = os.path.join(mylar.CACHE_DIR, 'newreleases.txt')
 
     if mylar.ALT_PULL:
+        #logger.info('[PULL-LIST] The Alt-Pull method is currently broken. Defaulting back to the normal method of grabbing the pull-list.') 
         logger.info('[PULL-LIST] Populating & Loading pull-list data directly from webpage')
         newpull.newpull()
     else:
         logger.info('[PULL-LIST] Populating & Loading pull-list data from file')
         f = urllib.urlretrieve(PULLURL, newrl)
 
+        #set newrl to a manual file to pull in against that particular file
+        #newrl = '/mylar/tmp/newreleases.txt'
+
     #newtxtfile header info ("SHIPDATE\tPUBLISHER\tISSUE\tCOMIC\tEXTRA\tSTATUS\n")
     #STATUS denotes default status to be applied to pulllist in Mylar (default = Skipped)
 
-    newfl = mylar.CACHE_DIR + "/Clean-newreleases.txt"
+    newfl = os.path.join(mylar.CACHE_DIR, 'Clean-newreleases.txt')
     newtxtfile = open(newfl, 'wb')
 
     if check(newrl, 'Service Unavailable'):
@@ -399,18 +403,8 @@ def pullit(forcecheck=None):
     logger.info(u"Populating the NEW Weekly Pull list into Mylar.")
     newtxtfile.close()
 
-    #mylardb = os.path.join(mylar.DATA_DIR, "mylar.db")
-
-    #connection = sqlite3.connect(str(mylardb))
-    #cursor = connection.cursor()
-
-    #cursor.execute('drop table if exists weekly;')
     myDB.action("drop table if exists weekly")
     myDB.action("CREATE TABLE IF NOT EXISTS weekly (SHIPDATE, PUBLISHER text, ISSUE text, COMIC VARCHAR(150), EXTRA text, STATUS text, ComicID text, IssueID text)")
-
-    #cursor.execute("CREATE TABLE IF NOT EXISTS weekly (SHIPDATE, PUBLISHER text, ISSUE text, COMIC VARCHAR(150), EXTRA text, STATUS text, ComicID text);")
-    #connection.commit()
-
 
     csvfile = open(newfl, "rb")
     creader = csv.reader(csvfile, delimiter='\t')
@@ -420,9 +414,8 @@ def pullit(forcecheck=None):
         if "MERCHANDISE" in row: break
         if "MAGAZINES" in row: break
         if "BOOK" in row: break
-        #print (row)
         try:
-            logger.debug("Row: %s" % row)
+            #logger.debug("Row: %s" % row)
             controlValueDict = {'COMIC': row[3],
                                 'ISSUE': row[2],
                                 'EXTRA': row[4]}
@@ -431,19 +424,15 @@ def pullit(forcecheck=None):
                             'STATUS': row[5],
                             'COMICID': None}
             myDB.upsert("weekly", newValueDict, controlValueDict)
-            #cursor.execute("INSERT INTO weekly VALUES (?,?,?,?,?,?,null);", row)
         except Exception, e:
             #print ("Error - invald arguments...-skipping")
             pass
         t+=1
     csvfile.close()
-    #connection.commit()
-    #connection.close()
     logger.info(u"Weekly Pull List successfully loaded.")
     #let's delete the files
-    pullpath = str(mylar.CACHE_DIR) + "/"
-    os.remove(str(pullpath) + "Clean-newreleases.txt")
-    os.remove(str(pullpath) + "newreleases.txt")
+    os.remove(os.path.join(mylar.CACHE_DIR, 'Clean-newreleases.txt'))
+    os.remove(os.path.join(mylar.CACHE_DIR, 'newreleases.txt'))
     pullitcheck(forcecheck=forcecheck)
 
 def pullitcheck(comic1off_name=None, comic1off_id=None, forcecheck=None, futurepull=None, issue=None):
@@ -524,8 +513,17 @@ def pullitcheck(comic1off_name=None, comic1off_id=None, forcecheck=None, futurep
                     latestdate = week['LatestDate']
                     logger.fdebug("latestdate:  " + str(latestdate))
                     if latestdate[8:] == '':
-                        logger.fdebug("invalid date " + str(latestdate) + " appending 01 for day for continuation.")
-                        latest_day = '01'
+                        if '-' in latestdate[:4] and not latestdate.startswith('20'):
+                        #pull-list f'd up the date by putting '15' instead of '2015' causing 500 server errors
+                            st_date = latestdate.find('-')
+                            st_remainder = latestdate[st_date+1:]
+                            st_year = latestdate[:st_date]
+                            year = '20' + st_year
+                            latestdate = str(year) + '-' + str(st_remainder)
+                            #logger.fdebug('year set to: ' + latestdate)
+                        else:
+                            logger.fdebug("invalid date " + str(latestdate) + " appending 01 for day for continuation.")
+                            latest_day = '01'
                     else:
                         latest_day = latestdate[8:]
                     c_date = datetime.date(int(latestdate[:4]), int(latestdate[5:7]), int(latest_day))
@@ -664,6 +662,21 @@ def pullitcheck(comic1off_name=None, comic1off_id=None, forcecheck=None, futurep
                                 logger.fdebug("comicnm : " + str(comicnm) + " / mod :" + str(modcomicnm))
 
                                 if comicnm == watchcomic.upper() or modcomicnm == modwatchcomic.upper():
+                                    if mylar.ANNUALS_ON:
+                                        if 'annual' in watchcomic.lower() and 'annual' not in comicnm.lower():
+                                            logger.fdebug('Annual detected in issue, but annuals are not enabled and no series match in wachlist.')
+                                            break
+                                        else:
+                                            #(annual in comicnm & in watchcomic) or (annual in comicnm & not in watchcomic)(with annuals on) = match.
+                                            pass
+                                    else:
+                                        #annuals off
+                                        if ('annual' in comicnm.lower() and 'annual' not in watchcomic.lower()) or ('annual' in watchcomic.lower() and 'annual' not in comicnm.lower()):
+                                            logger.fdebug('Annual detected in issue, but annuals are not enabled and no series match in wachlist.')
+                                            break
+                                        else:
+                                            #annual in comicnm & in watchcomic (with annuals off) = match.
+                                            pass
                                     logger.fdebug("matched on:" + comicnm + "..." + watchcomic.upper())
                                     watchcomic = unlines[cnt]
                                     pass
@@ -741,8 +754,8 @@ def pullitcheck(comic1off_name=None, comic1off_id=None, forcecheck=None, futurep
                                                     break
 
                                         else:
-                                            #logger.fdebug('issuedate:' + str(datevalues[0]['issuedate']))
-                                            #logger.fdebug('status:' + str(datevalues[0]['status']))
+                                            logger.fdebug('issuedate:' + str(datevalues[0]['issuedate']))
+                                            logger.fdebug('status:' + str(datevalues[0]['status']))
                                             datestatus = datevalues[0]['status']
                                             validcheck = checkthis(datevalues[0]['issuedate'], datestatus, usedate)
                                             if validcheck == True:
@@ -907,7 +920,8 @@ def checkthis(datecheck, datestatus, usedate):
 
     return valid_check
 
-def weekly_singlecopy(comicid, issuenum, file, path, module=None, issueid=None):
+def weekly_check(comicid, issuenum, file=None, path=None, module=None, issueid=None):
+
     if module is None:
         module = ''
     module += '[WEEKLY-PULL]'
@@ -935,9 +949,20 @@ def weekly_singlecopy(comicid, issuenum, file, path, module=None, issueid=None):
         return
 
     logger.info(module + ' Issue found on weekly pull-list.')
-
     if mylar.WEEKFOLDER:
-        desdir = os.path.join(mylar.DESTINATION_DIR, pulldate)
+        weekly_singlecopy(comicid, issuenum, file, path, pulldate)
+    if mylar.SEND2READ:
+        send2read(comicid, issueid, issuenum)
+    return
+
+def weekly_singlecopy(comicid, issuenum, file, path, pulldate):
+
+    module = '[WEEKLY-PULL COPY]'
+    if mylar.WEEKFOLDER:
+        if mylar.WEEKFOLDER_LOC:
+            desdir = os.path.join(mylar.WEEKFOLDER_LOC, pulldate)
+        else:
+            desdir = os.path.join(mylar.DESTINATION_DIR, pulldate)
         dircheck = mylar.filechecker.validateAndCreateDirectory(desdir, True, module=module)
         if dircheck:
             pass
@@ -957,11 +982,10 @@ def weekly_singlecopy(comicid, issuenum, file, path, module=None, issueid=None):
         return
 
     logger.info(module + ' Sucessfully copied to ' + desfile.encode('utf-8').strip())
-
-    if mylar.SEND2READ:
-        send2read(comicid, issueid, issuenum)
+    return
 
 def send2read(comicid, issueid, issuenum):
+
     module = '[READLIST]'
     if mylar.SEND2READ:
         logger.info(module + " Send to Reading List enabled for new pulls. Adding to your readlist in the status of 'Added'")
@@ -1032,6 +1056,8 @@ def future_check():
     #limit the search to just the 'current year' since if it's anything but a #1, it should have associated data already.
     #limittheyear = []
     #limittheyear.append(cf['IssueDate'][-4:])
+    search_results = []
+
     for ser in cflist:
         matched = False
         theissdate = ser['IssueDate'][-4:]
@@ -1046,24 +1072,61 @@ def future_check():
             logger.fdebug('Publisher of series to be added: ' + str(ser['Publisher']))
             for sr in searchresults:
                 logger.fdebug('Comparing ' + sr['name'] + ' - to - ' + ser['ComicName'])
-                tmpsername = re.sub('[\'\*\^\%\$\#\@\!\-\/\,\.\:\(\)]', '', ser['ComicName']).strip()
-                tmpsrname = re.sub('[\'\*\^\%\$\#\@\!\-\/\,\.\:\(\)]', '', sr['name']).strip()
+                tmpsername = re.sub('[\'\*\^\%\$\#\@\!\/\,\.\:\(\)]', '', ser['ComicName']).strip()
+                tmpsrname = re.sub('[\'\*\^\%\$\#\@\!\/\,\.\:\(\)]', '', sr['name']).strip()
+                tmpsername = re.sub('\-', '', tmpsername)
+                if tmpsername.lower().startswith('the '):
+                    tmpsername = re.sub('the ', '', tmpsername.lower()).strip()
+                else:
+                    tmpsername = re.sub(' the ', '', tmpsername.lower()).strip()
+                tmpsrname = re.sub('\-', '', tmpsrname)
+                if tmpsrname.lower().startswith('the '):
+                    tmpsrname = re.sub('the ', '', tmpsrname.lower()).strip()
+                else:
+                    tmpsrname = re.sub(' the ', '', tmpsrname.lower()).strip()
+
+                tmpsername = re.sub(' and ', '', tmpsername.lower()).strip()
+                tmpsername = re.sub(' & ', '', tmpsername.lower()).strip()
+                tmpsrname = re.sub(' and ', '', tmpsrname.lower()).strip()
+                tmpsrname = re.sub(' & ', '', tmpsrname.lower()).strip()
+
+                #append the cleaned-up name to get searched later against if necessary.
+                search_results.append({'name':    tmpsrname,
+                                       'comicid':  sr['comicid']})
+
+                tmpsername = re.sub('\s', '', tmpsername).strip()
+                tmpsrname = re.sub('\s', '', tmpsrname).strip()
+
+                logger.fdebug('Comparing modified names: ' + tmpsrname + ' - to - ' + tmpsername)
                 if tmpsername.lower() == tmpsrname.lower():
-                    logger.info('Name matched successful: ' + sr['name'])
+                    logger.fdebug('Name matched successful: ' + sr['name'])
                     if str(sr['comicyear']) == str(theissdate):
-                        logger.info('Matched to : ' + str(theissdate))
+                        logger.fdebug('Matched to : ' + str(theissdate))
                         matches.append(sr)
             if len(matches) == 1:
                 logger.info('Narrowed down to one series as a direct match: ' + matches[0]['name'] + '[' + str(matches[0]['comicid']) + ']')
                 cid = matches[0]['comicid']
                 matched = True
             else:
-                for pos_match in matches:
+                logger.info('Unable to determine a successful match at this time (this is still a WIP so it will eventually work). Not going to attempt auto-adding at this time.')
+                catch_words = ('the', 'and', '&', 'to')
+                for pos_match in search_results:
+                    logger.info(pos_match)
                     length_match = len(pos_match['name']) / len(ser['ComicName'])
                     logger.fdebug('length match differential set for an allowance of 20%')
                     logger.fdebug('actual differential in length between result and series title: ' + str((length_match * 100)-100) + '%')
-                    split_match = pos_match['name'].split()
-                    split_series = ser['ComicName'].split()
+                    if ((length_match * 100)-100) > 20:
+                        logger.fdebug('there are too many extra words to consider this as match for the given title. Ignoring this result.') 
+                        continue
+                    new_match = pos_match['name'].lower()
+                    split_series = ser['ComicName'].lower().split()
+                    for cw in catch_words:
+                        for x in new_match.split():
+                            #logger.fdebug('comparing x: ' + str(x) + ' to cw: ' + str(cw)) 
+                            if x == cw:
+                                new_match = re.sub(x, '', new_match)
+
+                    split_match = new_match.split()
                     word_match = 0
                     i = 0
                     for ss in split_series:
@@ -1071,19 +1134,22 @@ def future_check():
                             matchword = split_match[i].lower()
                         except:
                             break
-                        if split_match.lower().index(ss) == split_series.lower().index(ss):
+                        if split_match.index(ss) == split_series.index(ss):
                             #will return word position in string.
-                            logger.fdebug('word match to position found in both strings at position : ' + str(split_match.lower().index(ss)))
+                            #logger.fdebug('word match to position found in both strings at position : ' + str(split_match.index(ss)))
                             word_match+=1
-                        elif any(['the', 'and', '&'] == matchword.lower()):
-                            logger.fdebug('common word detected of : ' + matchword)
+                        elif any([x == matchword for x in catch_words]):
+                            #logger.fdebug('[MW] common word detected of : ' + matchword)
+                            word_match+=.5
+                        elif any([cw == ss for cw in catch_words]):
+                            #logger.fdebug('[CW] common word detected of : ' + matchword)
                             word_match+=.5
                         i+=1                                
-                    logger.info('word match score of : ' + str(word_match) + ' / ' + str(len(split_series)))
-
-#        elif len(searchresults) == 1:
-#            matched = True
-#            cid = searchresults[0]['comicid']
+                    logger.fdebug('word match score of : ' + str(word_match) + ' / ' + str(len(split_series)))
+                    if word_match == len(split_series) or (word_match / len(split_series)) > 80:
+                        logger.fdebug('[' + pos_match['name'] + '] considered a match - word matching percentage is greater than 80%. Attempting to auto-add series into watchlist.')
+                        cid = pos_match['comicid']
+                        matched = True                
 
         if matched:
             #we should probably load all additional issues for the series on the futureupcoming list that are marked as Wanted and then

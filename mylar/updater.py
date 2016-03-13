@@ -26,7 +26,9 @@ import mylar
 from mylar import db, logger, helpers, filechecker
 
 def dbUpdate(ComicIDList=None, calledfrom=None):
-
+    if mylar.IMPORTLOCK:
+        logger.info('Import is currently running - deferring this until the next scheduled run sequence.')
+        return
     myDB = db.DBConnection()
     #print "comicidlist:" + str(ComicIDList)
     if ComicIDList is None:
@@ -104,9 +106,6 @@ def dbUpdate(ComicIDList=None, calledfrom=None):
                 mylar.importer.GCDimport(ComicID)
             else:
                 cchk = importer.addComictoDB(ComicID, mismatch)
-                if cchk == 'apireached':
-                    logger.warn('API Limit has been reached. Aborting update at this time.')
-                    return
         else:
             if mylar.CV_ONETIMER == 1:
                 logger.fdebug("CV_OneTimer option enabled...")
@@ -157,9 +156,6 @@ def dbUpdate(ComicIDList=None, calledfrom=None):
 
                 if whack == False:
                     cchk = mylar.importer.addComictoDB(ComicID, mismatch, calledfrom='dbupdate', annload=annload)
-                    if cchk == 'apireached':
-                        logger.warn('API Limit has been reached. Aborting update at this time.')
-                        break                    
                     #reload the annuals here.
 
                     issues_new = myDB.select('SELECT * FROM issues WHERE ComicID=?', [ComicID])
@@ -272,15 +268,9 @@ def dbUpdate(ComicIDList=None, calledfrom=None):
 
                 else:
                     cchk = mylar.importer.addComictoDB(ComicID, mismatch, annload=annload)
-                    if cchk == 'apireached':
-                        logger.warn('API Limit has been reached. Aborting update at this time.')
-                        break
 
             else:
                 cchk = mylar.importer.addComictoDB(ComicID, mismatch)
-                if cchk == 'apireached':
-                    logger.warn('API Limit has been reached. Aborting update at this time.')
-                    break
 
         cnt +=1
         time.sleep(15) #pause for 15 secs so dont hammer CV and get 500 error
@@ -371,9 +361,6 @@ def upcoming_update(ComicID, ComicName, IssueNumber, IssueDate, forcecheck=None,
                     mylar.importer.GCDimport(ComicID, pullupd)
                 else: 
                     cchk = mylar.importer.updateissuedata(ComicID, ComicName, calledfrom='weeklycheck')#mylar.importer.addComictoDB(ComicID,mismatch,pullupd)
-                    if cchk == 'apireached':
-                        logger.warn('API Limit has been reached. Aborting update at this time.')
-                        return
             else:
                 logger.fdebug('It has not been longer than 5 hours since we last did this...we will wait so we do not hammer things.')
                 logger.fdebug('linking ComicID to Pull-list to reflect status.')
@@ -808,7 +795,9 @@ def forceRescan(ComicID, archive=None, module=None):
             comiccnt += int(tmpv['comiccount'])
             fca.append(tmpv)
     else:
-        fca.append(filechecker.listFiles(dir=archive, watchcomic=rescan['ComicName'], Publisher=rescan['ComicPublisher'], AlternateSearch=rescan['AlternateSearch']))
+        files_arc = filechecker.listFiles(dir=archive, watchcomic=rescan['ComicName'], Publisher=rescan['ComicPublisher'], AlternateSearch=rescan['AlternateSearch'])
+        fca.append(files_arc)
+        comiccnt = int(files_arc['comiccount'])
     fcb = []
     fc = {}
     #if len(fca) > 0:
@@ -1205,11 +1194,12 @@ def forceRescan(ComicID, archive=None, module=None):
                 controlValueDict = {"IssueID": iss_id}
 
                 #if Archived, increase the 'Have' count.
-                #if archive:
-                #    issStatus = "Archived"
-
-                if haveissue == "yes":
+                if archive:
+                    issStatus = "Archived"
+                else:
                     issStatus = "Downloaded"
+
+                if haveissue == "yes":                    
                     newValueDict = {"Location":           isslocation,
                                     "ComicSize":          issSize,
                                     "Status":             issStatus
@@ -1370,6 +1360,9 @@ def forceRescan(ComicID, archive=None, module=None):
                     "Total":           iscnt}
 
     myDB.upsert("comics", newValueStat, controlValueStat)
+    #enforce permissions
+    logger.fdebug(module + ' Ensuring permissions/ownership enforced for series: ' + rescan['ComicName'])
+    filechecker.setperms(rescan['ComicLocation'])
     logger.info(module + ' I have physically found ' + str(foundcount) + ' issues, ignored ' + str(ignorecount) + ' issues, snatched ' + str(snatchedcount) + ' issues, and accounted for ' + str(totalarc) + ' in an Archived state [ Total Issue Count: ' + str(havefiles) + ' / ' + str(combined_total) + ' ]')
 
     return

@@ -23,10 +23,9 @@ import urllib2
 import lib.feedparser
 import mylar
 import platform
-from mylar.helpers import cvapi_check
 from bs4 import BeautifulSoup as Soup
 import httplib
-
+import lib.requests as requests
 
 def patch_http_response_read(func):
     def inner(*args):
@@ -74,23 +73,34 @@ def pulldetails(comicid, type, issueid=None, offset=1, arclist=None, comicidlist
         PULLURL = mylar.CVURL + 'story_arcs/?api_key=' + str(comicapi) + '&format=xml&filter=name:' + str(issueid) + '&field_list=cover_date'
     elif type == 'comicyears':
         PULLURL = mylar.CVURL + 'volumes/?api_key=' + str(comicapi) + '&format=xml&filter=id:' + str(comicidlist) + '&field_list=name,id,start_year,publisher&offset=' + str(offset)
+    elif type == 'import':
+        PULLURL = mylar.CVURL + 'issues/?api_key=' + str(comicapi) + '&format=xml&filter=id:' + (comicidlist) + '&field_list=cover_date,id,issue_number,name,date_last_updated,store_date,volume' + '&offset=' + str(offset)
 
-    #logger.info('PULLURL: ' + PULLURL)
-    #CV API Check here.
-    if mylar.CVAPI_COUNT == 0 or mylar.CVAPI_COUNT >= mylar.CVAPI_MAX:
-        chkit = cvapi_check()
-        if chkit == False:
-            return "apireached"
+    #logger.info('CV.PULLURL: ' + PULLURL)
+    #new CV API restriction - one api request / second.
+    if mylar.CVAPI_RATE is None or mylar.CVAPI_RATE < 2:
+        time.sleep(2)
+    else:
+        time.sleep(mylar.CVAPI_RATE)
+
     #download the file:
-    file = urllib2.urlopen(PULLURL)
-    #increment CV API counter.
-    mylar.CVAPI_COUNT += 1
+    #set payload to None for now...
+    payload = None
+    verify = False
+
+    try:
+        r = requests.get(PULLURL, params=payload, verify=verify, headers=mylar.CV_HEADERS)
+    except Exception, e:
+        logger.warn('Error fetching data from ComicVine: %s' % (e))
+        return
+
+    #file = urllib2.urlopen(PULLURL)
     #convert to string:
-    data = file.read()
+    #data = file.read()
     #close file because we dont need it anymore:
-    file.close()
+    #file.close()
     #parse the xml you downloaded
-    dom = parseString(data)
+    dom = parseString(r.content) #(data)
 
     return dom
 
@@ -107,28 +117,30 @@ def getComic(comicid, type, issueid=None, arc=None, arcid=None, arclist=None, co
         if comicid is None:
             #if comicid is None, it's coming from the story arc search results.
             id = arcid
-            islist = arclist
+            #since the arclist holds the issueids, and the pertinent reading order - we need to strip out the reading order so this works.
+            aclist = ''
+            for ac in arclist.split('|'):
+                aclist += ac[:ac.find(',')] + '|'
+            if aclist.endswith('|'):
+                aclist = aclist[:-1]
+            islist = aclist
         else:
             id = comicid
             islist = None
         searched = pulldetails(id, 'issue', None, 0, islist)
         if searched is None:
             return False
-        elif searched == 'apireached': 
-            return 'apireached'
         totalResults = searched.getElementsByTagName('number_of_total_results')[0].firstChild.wholeText
         logger.fdebug("there are " + str(totalResults) + " search results...")
         if not totalResults:
             return False
         countResults = 0
         while (countResults < int(totalResults)):
-            logger.fdebug("querying " + str(countResults))
+            logger.fdebug("querying range from " + str(countResults) + " to " + str(countResults + 100))
             if countResults > 0:
                 #new api - have to change to page # instead of offset count
                 offsetcount = countResults
                 searched = pulldetails(id, 'issue', None, offsetcount, islist)
-                if searched == 'apireached':
-                    return 'apireached'
             issuechoice, tmpdate = GetIssuesInfo(id, searched, arcid)
             if tmpdate < firstdate:
                 firstdate = tmpdate
@@ -138,32 +150,62 @@ def getComic(comicid, type, issueid=None, arc=None, arcid=None, arclist=None, co
 
         issue['issuechoice'] = ndic
         issue['firstdate'] = firstdate
-
         return issue
 
     elif type == 'comic':
         dom = pulldetails(comicid, 'comic', None, 1)
-        if dom == 'apireached':
-            return 'apireached'
         return GetComicInfo(comicid, dom)
     elif type == 'firstissue':
         dom = pulldetails(comicid, 'firstissue', issueid, 1)
-        if dom == 'apireached':
-            return 'apireached'
         return GetFirstIssue(issueid, dom)
     elif type == 'storyarc':
         dom = pulldetails(arc, 'storyarc', None, 1)
-        if dom == 'apireached':
-            return 'apireached'
         return GetComicInfo(issueid, dom)
     elif type == 'comicyears':
         #used by the story arc searcher when adding a given arc to poll each ComicID in order to populate the Series Year.
         #this grabs each issue based on issueid, and then subsets the comicid for each to be used later.
         #set the offset to 0, since we're doing a filter.
         dom = pulldetails(arcid, 'comicyears', offset=0, comicidlist=comicidlist)
-        if dom == 'apireached':
-            return 'apireached'
         return GetSeriesYears(dom)
+    elif type == 'import':
+        #used by the importer when doing a scan with metatagging enabled. If metatagging comes back true, then there's an IssueID present
+        #within the tagging (with CT). This compiles all of the IssueID's during a scan (in 100's), and returns the corresponding CV data
+        #related to the given IssueID's - namely ComicID, Name, Volume (more at some point, but those are the important ones).
+        offset = 1
+        if len(comicidlist) <= 100:
+            endcnt = len(comicidlist)
+        else:
+            endcnt = 100
+
+        id_count = 0
+        import_list = []
+        logger.fdebug('comicidlist:' + str(comicidlist))
+
+        while id_count < len(comicidlist):
+            #break it up by 100 per api hit
+            #do the first 100 regardless
+            in_cnt = 0
+            for i in range(id_count, endcnt):
+                if in_cnt == 0:
+                    tmpidlist = str(comicidlist[i])
+                else:
+                    tmpidlist += '|' + str(comicidlist[i])
+                in_cnt +=1
+            logger.info('tmpidlist: ' + str(tmpidlist))
+
+            searched = pulldetails(None, 'import', offset=0, comicidlist=tmpidlist)
+
+            if searched is None:
+                break
+            else:
+                tGIL = GetImportList(searched)
+                import_list += tGIL
+
+            endcnt +=100
+            id_count +=100
+
+        return import_list
+
 
 def GetComicInfo(comicid, dom, safechk=None):
     if safechk is None:
@@ -315,11 +357,15 @@ def GetComicInfo(comicid, dom, safechk=None):
                     vfindit = re.findall('[^()]+', vfind)
                     vfind = vfindit[0]
                 vf = re.findall('[^<>]+', vfind)
-                ledigit = re.sub("[^0-9]", "", vf[0])
-                if ledigit != '':
-                    comic['ComicVersion'] = ledigit
-                    logger.fdebug("Volume information found! Adding to series record : volume " + comic['ComicVersion'])
-                    break
+                try:
+                    ledigit = re.sub("[^0-9]", "", vf[0])
+                    if ledigit != '':
+                        comic['ComicVersion'] = ledigit
+                        logger.fdebug("Volume information found! Adding to series record : volume " + comic['ComicVersion'])
+                        break
+                except:
+                    pass
+
                 i += 1
             else:
                 i += 1
@@ -516,6 +562,48 @@ def GetSeriesYears(dom):
 
     return serieslist
 
+def GetImportList(results):
+    logger.info('booyah')
+    importlist = results.getElementsByTagName('issue')
+    serieslist = []
+    importids = {}
+    tempseries = {}
+    for implist in importlist:
+        try:
+            totids = len(implist.getElementsByTagName('id'))
+            idt = 0
+            while (idt < totids):
+                if implist.getElementsByTagName('id')[idt].parentNode.nodeName == 'volume':
+                    tempseries['ComicID'] = implist.getElementsByTagName('id')[idt].firstChild.wholeText
+                elif implist.getElementsByTagName('id')[idt].parentNode.nodeName == 'issue':
+                    tempseries['IssueID'] = implist.getElementsByTagName('id')[idt].firstChild.wholeText
+                idt += 1
+        except:
+            tempseries['ComicID'] = None
+
+        try:
+            totnames = len(implist.getElementsByTagName('name'))
+            tot = 0
+            while (tot < totnames):
+                if implist.getElementsByTagName('name')[tot].parentNode.nodeName == 'volume':
+                    tempseries['ComicName'] = implist.getElementsByTagName('name')[tot].firstChild.wholeText
+                elif implist.getElementsByTagName('name')[tot].parentNode.nodeName == 'issue':
+                    try:
+                        tempseries['Issue_Name'] = implist.getElementsByTagName('name')[tot].firstChild.wholeText
+                    except:
+                        tempseries['Issue_Name'] = None
+                tot += 1
+        except:
+            tempseries['ComicName'] = 'None'
+
+        logger.info('tempseries:' + str(tempseries))
+        serieslist.append({"ComicID": tempseries['ComicID'],
+                           "IssueID": tempseries['IssueID'],
+                           "ComicName": tempseries['ComicName'],
+                           "Issue_Name": tempseries['Issue_Name']})
+
+
+    return serieslist
 
 def drophtml(html):
     from bs4 import BeautifulSoup
